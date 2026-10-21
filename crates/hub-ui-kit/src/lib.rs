@@ -1,3 +1,4 @@
+pub mod font;
 pub mod icon;
 pub mod style;
 pub mod tokens;

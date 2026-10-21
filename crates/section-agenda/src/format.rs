@@ -1,26 +1,9 @@
 use hub_core::agenda::recurrence::weekday_short;
 use hub_core::agenda::{Routine, Task};
-use hub_core::chrono::{Datelike, NaiveDate, NaiveDateTime, TimeDelta};
+use hub_core::chrono::{Datelike, NaiveDate, NaiveDateTime};
 
-pub fn day_label(date: NaiveDate, today: NaiveDate) -> String {
-    let short = format!("{} {}", weekday_short(date.weekday()), date.format("%d/%m"));
-    match (date - today).num_days() {
-        0 => format!("Hoje, {short}"),
-        1 => format!("Amanhã, {short}"),
-        -1 => format!("Ontem, {short}"),
-        _ => short,
-    }
-}
-
-pub fn task_meta(task: &Task, today: NaiveDate, show_date: bool) -> String {
-    let mut parts = Vec::new();
-    if show_date && let Some(date) = task.date {
-        parts.push(day_label(date, today));
-    }
-    if let Some(time) = task.time {
-        parts.push(time.format("%H:%M").to_string());
-    }
-    parts.join(", ")
+pub fn short_date(date: NaiveDate) -> String {
+    format!("{} {}", weekday_short(date.weekday()), date.format("%d/%m"))
 }
 
 pub fn completed_meta(task: &Task, today: NaiveDate) -> String {
@@ -50,10 +33,6 @@ pub fn routine_meta(routine: &Routine) -> String {
     }
 }
 
-pub fn is_tomorrow(date: NaiveDate, today: NaiveDate) -> bool {
-    date - today == TimeDelta::days(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,13 +42,9 @@ mod tests {
     }
 
     #[test]
-    fn day_labels_are_relative() {
-        let today = d("2026-10-21");
-        assert_eq!(day_label(today, today), "Hoje, qua 21/10");
-        assert_eq!(day_label(d("2026-10-22"), today), "Amanhã, qui 22/10");
-        assert_eq!(day_label(d("2026-10-20"), today), "Ontem, ter 20/10");
-        assert_eq!(day_label(d("2026-10-25"), today), "dom 25/10");
-        assert!(is_tomorrow(d("2026-10-22"), today));
+    fn short_dates_include_weekday() {
+        assert_eq!(short_date(d("2026-10-21")), "qua 21/10");
+        assert_eq!(short_date(d("2026-10-25")), "dom 25/10");
     }
 
     #[test]

@@ -2,7 +2,10 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_inicial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_inicial.sql"),
+    include_str!("../migrations/0002_notas_lembretes.sql"),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {

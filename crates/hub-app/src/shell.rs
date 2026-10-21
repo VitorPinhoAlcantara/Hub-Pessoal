@@ -55,19 +55,13 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         body("hub").size(FONT_SIZE_HEADING),
         space().width(Length::Fill),
         row![
-            toggle(Icon::Ai, "Chat de IA", app.ai_open, Message::ToggleAi),
             toggle(
                 Icon::Player,
-                "Player",
+                "Música",
                 app.player_open,
                 Message::TogglePlayer
             ),
-            toggle(
-                Icon::Settings,
-                "Configurações",
-                app.tab == Tab::Settings,
-                Message::TabSelected(Tab::Settings)
-            ),
+            toggle(Icon::Ai, "Chat de IA", app.ai_open, Message::ToggleAi),
         ]
         .spacing(units(1))
         .align_y(Alignment::Center),

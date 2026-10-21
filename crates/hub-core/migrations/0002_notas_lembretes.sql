@@ -1,0 +1,1 @@
+ALTER TABLE lembretes ADD COLUMN notas TEXT NOT NULL DEFAULT '';

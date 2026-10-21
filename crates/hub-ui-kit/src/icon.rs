@@ -38,6 +38,7 @@ icons! {
     List => "list",
     Done => "done",
     Flag => "flag",
+    Columns => "columns",
 }
 
 static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| {

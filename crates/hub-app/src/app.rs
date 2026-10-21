@@ -85,6 +85,11 @@ pub fn run(ctx: HubContext, options: Options) -> iced::Result {
     .subscription(App::subscription)
     .settings(iced::Settings {
         default_text_size: hub_ui_kit::tokens::FONT_SIZE.into(),
+        default_font: hub_ui_kit::font::UI,
+        fonts: hub_ui_kit::font::ALL
+            .iter()
+            .map(|bytes| (*bytes).into())
+            .collect(),
         antialiasing: false,
         ..iced::Settings::default()
     })

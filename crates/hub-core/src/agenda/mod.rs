@@ -114,6 +114,7 @@ pub struct Reminder {
     pub id: i64,
     pub task_id: Option<i64>,
     pub title: String,
+    pub notes: String,
     pub fires_at: NaiveDateTime,
     pub fired_at: Option<NaiveDateTime>,
     pub snoozed_until: Option<NaiveDateTime>,
@@ -328,6 +329,15 @@ pub fn upcoming(
     Ok(groups)
 }
 
+pub fn pending_before(conn: &Connection, before: NaiveDate) -> Result<Vec<Task>> {
+    query_tasks(
+        conn,
+        "concluida_em IS NULL AND (data IS NULL OR data < ?1)
+         ORDER BY data IS NULL, data, hora IS NULL, hora, id",
+        [before],
+    )
+}
+
 pub fn completed(conn: &Connection, limit: usize) -> Result<Vec<Task>> {
     query_tasks(
         conn,
@@ -471,7 +481,7 @@ pub fn create_reminder(
     get_reminder(conn, id)
 }
 
-const REMINDER_SELECT: &str = "SELECT l.id, l.tarefa_id, COALESCE(l.titulo, t.titulo, ''), l.dispara_em, l.disparado_em, l.adiado_ate
+const REMINDER_SELECT: &str = "SELECT l.id, l.tarefa_id, COALESCE(l.titulo, t.titulo, ''), l.dispara_em, l.disparado_em, l.adiado_ate, l.notas
      FROM lembretes l LEFT JOIN tarefas t ON t.id = l.tarefa_id";
 
 fn reminder_from_row(row: &Row<'_>) -> rusqlite::Result<Reminder> {
@@ -482,6 +492,7 @@ fn reminder_from_row(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         fires_at: row.get(3)?,
         fired_at: row.get(4)?,
         snoozed_until: row.get(5)?,
+        notes: row.get(6)?,
     })
 }
 
@@ -512,6 +523,58 @@ pub fn due_reminders(conn: &Connection, now: NaiveDateTime) -> Result<Vec<Remind
         &format!("{PENDING} <= ?1 ORDER BY COALESCE(l.adiado_ate, l.dispara_em), l.id"),
         [now],
     )
+}
+
+pub fn loose_reminders_between(
+    conn: &Connection,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<Reminder>> {
+    let start = from.and_time(NaiveTime::MIN);
+    let end = (to + TimeDelta::days(1)).and_time(NaiveTime::MIN);
+    query_reminders(
+        conn,
+        "l.tarefa_id IS NULL
+         AND COALESCE(l.adiado_ate, l.dispara_em) >= ?1
+         AND COALESCE(l.adiado_ate, l.dispara_em) < ?2
+         ORDER BY COALESCE(l.adiado_ate, l.dispara_em), l.id",
+        params![start, end],
+    )
+}
+
+pub fn update_reminder(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    notes: &str,
+    at: NaiveDateTime,
+    now: NaiveDateTime,
+) -> Result<Reminder> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(AgendaError::EmptyTitle);
+    }
+    let current = get_reminder(conn, id)?;
+    let moved = at != current.effective_time();
+    let fired_at = if moved && at > now {
+        None
+    } else {
+        current.fired_at
+    };
+    conn.execute(
+        "UPDATE lembretes SET titulo = ?2, notas = ?3, dispara_em = ?4, adiado_ate = NULL, disparado_em = ?5
+         WHERE id = ?1",
+        params![id, title, notes, at, fired_at],
+    )?;
+    get_reminder(conn, id)
+}
+
+pub fn delete_reminder(conn: &Connection, id: i64) -> Result<()> {
+    let changed = conn.execute("DELETE FROM lembretes WHERE id = ?1", [id])?;
+    if changed == 0 {
+        return Err(AgendaError::NotFound(id));
+    }
+    Ok(())
 }
 
 pub fn mark_reminder_fired(conn: &Connection, id: i64, now: NaiveDateTime) -> Result<()> {

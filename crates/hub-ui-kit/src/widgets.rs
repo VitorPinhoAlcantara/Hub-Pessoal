@@ -1,9 +1,10 @@
 use iced::widget::{
-    Button, Container, Text, button, container, row, scrollable, stack, svg, text, text_input,
-    tooltip,
+    Button, Container, Text, button, container, mouse_area, opaque, row, scrollable, stack, svg,
+    text, text_input, tooltip,
 };
 use iced::{Alignment, Color, Element, Length, Padding};
 
+use crate::font;
 use crate::icon::Icon;
 use crate::style;
 use crate::tokens::*;
@@ -25,11 +26,17 @@ pub fn panel<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Container<'a, M> 
 }
 
 pub fn title<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(value).size(FONT_SIZE_TITLE).color(TEXT_PRIMARY)
+    text(value)
+        .size(FONT_SIZE_TITLE)
+        .font(font::UI_MEDIUM)
+        .color(TEXT_PRIMARY)
 }
 
 pub fn heading<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(value).size(FONT_SIZE_HEADING).color(TEXT_PRIMARY)
+    text(value)
+        .size(FONT_SIZE_HEADING)
+        .font(font::UI_MEDIUM)
+        .color(TEXT_PRIMARY)
 }
 
 pub fn body<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
@@ -167,4 +174,48 @@ pub fn scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
         .height(Length::Fill)
         .style(style::scroll)
         .into()
+}
+
+pub fn modal<'a, M: Clone + 'a>(
+    base: impl Into<Element<'a, M>>,
+    content: impl Into<Element<'a, M>>,
+    on_dismiss: M,
+) -> Element<'a, M> {
+    let dialog = container(content).padding(units(5)).style(style::dialog);
+    let layer = mouse_area(
+        container(opaque(dialog))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(units(6))
+            .style(style::backdrop),
+    )
+    .on_press(on_dismiss);
+    stack![base.into(), opaque(layer)].into()
+}
+
+pub fn confirm<'a, M: Clone + 'a>(
+    question: String,
+    detail: String,
+    confirm_label: &'a str,
+    on_confirm: M,
+    on_cancel: M,
+) -> Element<'a, M> {
+    iced::widget::column![
+        heading(question),
+        muted(detail),
+        row![
+            iced::widget::space().width(Length::Fill),
+            ghost_button("Cancelar", Some(on_cancel)),
+            button(text(confirm_label).size(FONT_SIZE))
+                .padding([units(2), units(4)])
+                .style(style::danger_solid)
+                .on_press(on_confirm),
+        ]
+        .spacing(units(2)),
+    ]
+    .spacing(units(4))
+    .width(380)
+    .into()
 }

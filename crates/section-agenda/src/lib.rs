@@ -1,41 +1,62 @@
+pub mod board;
+pub mod editor;
 mod format;
 mod routine_form;
 mod view;
 
 use hub_core::HubContext;
-use hub_core::agenda::{self, NewRoutine, Reminder, Routine, Task, TodayView, quick_add};
-use hub_core::chrono::NaiveDate;
+use hub_core::agenda::{self, Reminder, Routine, Task};
+use hub_core::chrono::{NaiveDate, TimeDelta};
 use hub_core::events::HubEvent;
 use hub_ui_kit::Section;
-use hub_ui_kit::iced::{Element, Subscription, Task as Command};
+use hub_ui_kit::iced::keyboard::{self, Modifiers, key};
+use hub_ui_kit::iced::{Element, Event, Subscription, Task as Command, event};
 
+use board::{Card, CardId, CardKind, DayColumn, Month};
+pub use editor::{Editor, EditorMessage, EditorOutput, EditorTarget};
 pub use routine_form::{RecurrenceKind, RoutineForm, RoutineFormMessage};
 
-pub const UPCOMING_DAYS: i64 = 14;
 pub const COMPLETED_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
     #[default]
-    Today,
-    Upcoming,
+    Week,
+    Calendar,
     Routines,
     Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteTarget {
+    Card(CardId),
+    Routine(i64),
+}
+
+pub enum Modal {
+    Editor(Box<Editor>),
+    ConfirmDelete { target: DeleteTarget, title: String },
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     ScreenSelected(Screen),
-    QuickAddChanged(String),
-    QuickAddSubmitted,
+    OpenCreate(Option<NaiveDate>),
+    OpenCreateRoutine,
+    OpenCard(CardId),
+    Editor(EditorMessage),
+    EditorSaved,
+    AskDelete(DeleteTarget, String),
+    DeleteConfirmed,
+    ModalClosed,
     TaskToggled(i64, bool),
-    TaskDeleted(i64),
+    FilterToggled(CardKind),
+    ModifiersChanged(Modifiers),
+    ShiftDays(i64),
+    GoToday,
+    DayOpened(NaiveDate),
+    MonthShifted(i32),
     RoutineToggled(i64, bool),
-    RoutineDeleted(i64),
-    RoutineFormOpened,
-    RoutineFormClosed,
-    RoutineForm(RoutineFormMessage),
-    RoutineSubmitted,
     MissedDismissed,
     ErrorDismissed,
     Refresh,
@@ -44,32 +65,48 @@ pub enum Message {
 pub struct Agenda {
     ctx: HubContext,
     screen: Screen,
-    quick_add: String,
-    today: TodayView,
-    upcoming: Vec<(NaiveDate, Vec<Task>)>,
+    today: NaiveDate,
+    focus: NaiveDate,
+    month: Month,
+    days: Vec<DayColumn>,
+    pending: Vec<Card>,
+    calendar: Vec<DayColumn>,
     routines: Vec<Routine>,
     completed: Vec<Task>,
     missed: Vec<Reminder>,
-    routine_form: Option<RoutineForm>,
+    filter: [bool; 3],
+    modifiers: Modifiers,
+    modal: Option<Modal>,
     error: Option<String>,
-    current_day: NaiveDate,
+}
+
+fn kind_index(kind: CardKind) -> usize {
+    match kind {
+        CardKind::Appointment => 0,
+        CardKind::Routine => 1,
+        CardKind::Reminder => 2,
+    }
 }
 
 impl Agenda {
     pub fn new(ctx: HubContext, missed: Vec<Reminder>) -> Self {
-        let current_day = ctx.clock.today();
+        let today = ctx.clock.today();
         let mut agenda = Self {
             ctx,
-            screen: Screen::Today,
-            quick_add: String::new(),
-            today: TodayView::default(),
-            upcoming: Vec::new(),
+            screen: Screen::Week,
+            today,
+            focus: today,
+            month: Month::of(today),
+            days: Vec::new(),
+            pending: Vec::new(),
+            calendar: Vec::new(),
             routines: Vec::new(),
             completed: Vec::new(),
             missed,
-            routine_form: None,
+            filter: [false; 3],
+            modifiers: Modifiers::default(),
+            modal: None,
             error: None,
-            current_day,
         };
         agenda.reload();
         agenda
@@ -79,12 +116,32 @@ impl Agenda {
         self.screen
     }
 
-    pub fn today(&self) -> &TodayView {
-        &self.today
+    pub fn today(&self) -> NaiveDate {
+        self.today
     }
 
-    pub fn upcoming(&self) -> &[(NaiveDate, Vec<Task>)] {
-        &self.upcoming
+    pub fn focus(&self) -> NaiveDate {
+        self.focus
+    }
+
+    pub fn month(&self) -> Month {
+        self.month
+    }
+
+    pub fn days(&self) -> &[DayColumn] {
+        &self.days
+    }
+
+    pub fn day(&self, date: NaiveDate) -> Option<&DayColumn> {
+        self.days.iter().find(|d| d.date == date)
+    }
+
+    pub fn pending(&self) -> &[Card] {
+        &self.pending
+    }
+
+    pub fn calendar(&self) -> &[DayColumn] {
+        &self.calendar
     }
 
     pub fn routines(&self) -> &[Routine] {
@@ -103,21 +160,60 @@ impl Agenda {
         self.error.as_deref()
     }
 
-    pub fn quick_add_text(&self) -> &str {
-        &self.quick_add
+    pub fn modal(&self) -> Option<&Modal> {
+        self.modal.as_ref()
     }
 
-    pub fn routine_form(&self) -> Option<&RoutineForm> {
-        self.routine_form.as_ref()
+    pub fn editor(&self) -> Option<&Editor> {
+        match &self.modal {
+            Some(Modal::Editor(editor)) => Some(editor),
+            _ => None,
+        }
+    }
+
+    pub fn is_filtered(&self, kind: CardKind) -> bool {
+        self.filter[kind_index(kind)]
+    }
+
+    pub fn has_filter(&self) -> bool {
+        self.filter.iter().any(|on| *on)
+    }
+
+    pub fn shows(&self, kind: CardKind) -> bool {
+        !self.has_filter() || self.is_filtered(kind)
     }
 
     fn reload(&mut self) {
-        self.current_day = self.ctx.clock.today();
+        let today = self.ctx.clock.today();
+        if today != self.today {
+            if self.focus == self.today {
+                self.focus = today;
+            }
+            self.today = today;
+        }
+        let (from, to) = board::week_range(self.focus);
+        let grid = self.month.grid();
         let result = (|| -> agenda::Result<()> {
             let db = self.ctx.db();
             let conn = db.conn();
-            self.today = agenda::today_view(conn, self.current_day)?;
-            self.upcoming = agenda::upcoming(conn, self.current_day, UPCOMING_DAYS)?;
+            self.days = board::build_days(
+                from,
+                to,
+                &agenda::tasks_between(conn, from, to, true)?,
+                &agenda::loose_reminders_between(conn, from, to)?,
+            );
+            self.pending = agenda::pending_before(conn, today - TimeDelta::days(board::PAST_DAYS))?
+                .iter()
+                .map(Card::from_task)
+                .collect();
+            if let (Some(first), Some(last)) = (grid.first(), grid.last()) {
+                self.calendar = board::build_days(
+                    *first,
+                    *last,
+                    &agenda::tasks_between(conn, *first, *last, true)?,
+                    &agenda::loose_reminders_between(conn, *first, *last)?,
+                );
+            }
             self.routines = agenda::list_routines(conn)?;
             self.completed = agenda::completed(conn, COMPLETED_LIMIT)?;
             Ok(())
@@ -132,15 +228,118 @@ impl Agenda {
         self.error = Some(error.to_string());
     }
 
-    fn apply(&mut self, change: impl FnOnce(&HubContext) -> agenda::Result<()>) {
+    fn apply(&mut self, change: impl FnOnce(&HubContext) -> agenda::Result<()>) -> bool {
         match change(&self.ctx) {
             Ok(()) => {
                 self.error = None;
                 self.reload();
                 self.ctx.events.publish(HubEvent::AgendaChanged);
+                true
             }
+            Err(error) => {
+                self.fail(error);
+                false
+            }
+        }
+    }
+
+    fn open_card(&mut self, id: CardId) {
+        let today = self.today;
+        let loaded = {
+            let db = self.ctx.db();
+            match id {
+                CardId::Task(id) => {
+                    agenda::get_task(db.conn(), id).map(|task| Editor::for_task(&task, today))
+                }
+                CardId::Reminder(id) => agenda::get_reminder(db.conn(), id)
+                    .map(|reminder| Editor::for_reminder(&reminder, today)),
+            }
+        };
+        match loaded {
+            Ok(editor) => self.modal = Some(Modal::Editor(Box::new(editor))),
             Err(error) => self.fail(error),
         }
+    }
+
+    fn save_editor(&mut self) {
+        let Some(Modal::Editor(editor)) = &mut self.modal else {
+            return;
+        };
+        let output = match editor.build() {
+            Ok(output) => output,
+            Err(message) => {
+                editor.error = Some(message);
+                return;
+            }
+        };
+        let target = editor.target;
+        let now = self.ctx.clock.now();
+        let result = (|| -> agenda::Result<()> {
+            let db = self.ctx.db();
+            let conn = db.conn();
+            match (target, output) {
+                (EditorTarget::New, EditorOutput::Task(task)) => {
+                    agenda::create_task(conn, task, now)?;
+                }
+                (EditorTarget::New, EditorOutput::Reminder { title, notes, at }) => {
+                    let reminder = agenda::create_reminder(conn, None, Some(&title), at)?;
+                    agenda::update_reminder(conn, reminder.id, &title, &notes, at, now)?;
+                }
+                (EditorTarget::New, EditorOutput::Routine(routine)) => {
+                    agenda::create_routine(conn, routine)?;
+                    agenda::generate_routine_tasks(conn, now.date(), now)?;
+                }
+                (EditorTarget::Task(id), EditorOutput::Task(task)) => {
+                    agenda::update_task(conn, id, task)?;
+                }
+                (EditorTarget::Reminder(id), EditorOutput::Reminder { title, notes, at }) => {
+                    agenda::update_reminder(conn, id, &title, &notes, at, now)?;
+                }
+                _ => {}
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.modal = None;
+                self.error = None;
+                self.reload();
+                self.ctx.events.publish(HubEvent::AgendaChanged);
+            }
+            Err(error) => {
+                if let Some(Modal::Editor(editor)) = &mut self.modal {
+                    editor.error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn delete(&mut self, target: DeleteTarget) {
+        self.apply(|ctx| {
+            let db = ctx.db();
+            match target {
+                DeleteTarget::Card(CardId::Task(id)) => agenda::delete_task(db.conn(), id),
+                DeleteTarget::Card(CardId::Reminder(id)) => agenda::delete_reminder(db.conn(), id),
+                DeleteTarget::Routine(id) => agenda::delete_routine(db.conn(), id),
+            }
+        });
+    }
+}
+
+fn listen(
+    event: Event,
+    _status: event::Status,
+    _window: hub_ui_kit::iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::ModifiersChanged(modifiers))
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(key::Named::Escape),
+            ..
+        }) => Some(Message::ModalClosed),
+        _ => None,
     }
 }
 
@@ -153,25 +352,31 @@ impl Section for Agenda {
 
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
-            Message::ScreenSelected(screen) => {
-                self.screen = screen;
-                self.reload();
+            Message::ScreenSelected(screen) => self.screen = screen,
+            Message::OpenCreate(date) => {
+                let editor = Editor::new(CardKind::Appointment, date, self.today);
+                self.modal = Some(Modal::Editor(Box::new(editor)));
             }
-            Message::QuickAddChanged(text) => self.quick_add = text,
-            Message::QuickAddSubmitted => {
-                let text = self.quick_add.trim().to_string();
-                if text.is_empty() {
-                    return Command::none();
-                }
-                let now = self.ctx.clock.now();
-                let parsed = quick_add::parse(&text, now);
-                self.apply(|ctx| {
-                    agenda::create_task(ctx.db().conn(), parsed.into(), now).map(|_| ())
-                });
-                if self.error.is_none() {
-                    self.quick_add.clear();
+            Message::OpenCreateRoutine => {
+                let editor = Editor::new(CardKind::Routine, None, self.today);
+                self.modal = Some(Modal::Editor(Box::new(editor)));
+            }
+            Message::OpenCard(id) => self.open_card(id),
+            Message::Editor(message) => {
+                if let Some(Modal::Editor(editor)) = &mut self.modal {
+                    editor.update(message);
                 }
             }
+            Message::EditorSaved => self.save_editor(),
+            Message::AskDelete(target, title) => {
+                self.modal = Some(Modal::ConfirmDelete { target, title });
+            }
+            Message::DeleteConfirmed => {
+                if let Some(Modal::ConfirmDelete { target, .. }) = self.modal.take() {
+                    self.delete(target);
+                }
+            }
+            Message::ModalClosed => self.modal = None,
             Message::TaskToggled(id, done) => {
                 let now = self.ctx.clock.now();
                 self.apply(|ctx| {
@@ -182,36 +387,43 @@ impl Section for Agenda {
                     }
                 });
             }
-            Message::TaskDeleted(id) => self.apply(|ctx| agenda::delete_task(ctx.db().conn(), id)),
+            Message::FilterToggled(kind) => {
+                if self.modifiers.shift() {
+                    self.filter = [false; 3];
+                } else {
+                    let slot = &mut self.filter[kind_index(kind)];
+                    *slot = !*slot;
+                }
+            }
+            Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            Message::ShiftDays(days) => {
+                self.focus += TimeDelta::days(days);
+                self.reload();
+            }
+            Message::GoToday => {
+                self.focus = self.today;
+                self.month = Month::of(self.today);
+                self.reload();
+            }
+            Message::DayOpened(date) => {
+                self.focus = date;
+                self.screen = Screen::Week;
+                self.reload();
+            }
+            Message::MonthShifted(months) => {
+                self.month = self.month.shift(months);
+                self.reload();
+            }
             Message::RoutineToggled(id, active) => {
-                self.apply(|ctx| agenda::set_routine_active(ctx.db().conn(), id, active));
-                if active {
-                    let now = self.ctx.clock.now();
-                    self.apply(|ctx| {
-                        agenda::generate_routine_tasks(ctx.db().conn(), now.date(), now).map(|_| ())
-                    });
-                }
-            }
-            Message::RoutineDeleted(id) => {
-                self.apply(|ctx| agenda::delete_routine(ctx.db().conn(), id))
-            }
-            Message::RoutineFormOpened => {
-                self.routine_form = Some(RoutineForm::new(self.current_day));
-            }
-            Message::RoutineFormClosed => self.routine_form = None,
-            Message::RoutineForm(message) => {
-                if let Some(form) = &mut self.routine_form {
-                    form.update(message);
-                }
-            }
-            Message::RoutineSubmitted => {
-                let Some(form) = &self.routine_form else {
-                    return Command::none();
-                };
-                match form.build() {
-                    Ok(routine) => self.create_routine(routine),
-                    Err(message) => self.error = Some(message),
-                }
+                let now = self.ctx.clock.now();
+                self.apply(|ctx| {
+                    let db = ctx.db();
+                    agenda::set_routine_active(db.conn(), id, active)?;
+                    if active {
+                        agenda::generate_routine_tasks(db.conn(), now.date(), now)?;
+                    }
+                    Ok(())
+                });
             }
             Message::MissedDismissed => self.missed.clear(),
             Message::ErrorDismissed => self.error = None,
@@ -225,22 +437,11 @@ impl Section for Agenda {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+        event::listen_with(listen)
     }
-}
 
-impl Agenda {
-    fn create_routine(&mut self, routine: NewRoutine) {
-        let now = self.ctx.clock.now();
-        self.apply(|ctx| {
-            let db = ctx.db();
-            agenda::create_routine(db.conn(), routine)?;
-            agenda::generate_routine_tasks(db.conn(), now.date(), now)?;
-            Ok(())
-        });
-        if self.error.is_none() {
-            self.routine_form = None;
-        }
+    fn on_hide(&mut self) {
+        self.modifiers = Modifiers::default();
     }
 }
 

@@ -20,6 +20,10 @@ pub const DANGER: Color = hex(0xE5676B);
 pub const SUCCESS: Color = hex(0x6FCF97);
 pub const WARNING: Color = hex(0xE5B567);
 
+pub const KIND_APPOINTMENT: Color = ACCENT;
+pub const KIND_ROUTINE: Color = hex(0xB48CF2);
+pub const KIND_REMINDER: Color = hex(0xE5B567);
+
 pub const RADIUS_PANEL: f32 = 10.0;
 pub const RADIUS_CONTROL: f32 = 6.0;
 pub const GAP_PANEL: f32 = 8.0;

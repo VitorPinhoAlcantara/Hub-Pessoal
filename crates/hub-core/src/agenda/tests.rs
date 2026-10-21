@@ -270,3 +270,69 @@ fn missed_reminders_are_taken_once() {
     );
     assert_eq!(due_reminders(c, now).unwrap().len(), 1);
 }
+
+#[test]
+fn pending_before_lists_old_open_and_undated_tasks() {
+    let db = db();
+    let c = db.conn();
+    let now = at("2026-10-21 09:00");
+    create_task(c, new_task("antiga", Some("2026-10-10"), None), now).unwrap();
+    create_task(c, new_task("recente", Some("2026-10-19"), None), now).unwrap();
+    create_task(c, new_task("sem data", None, None), now).unwrap();
+    let done = create_task(c, new_task("feita", Some("2026-10-01"), None), now).unwrap();
+    complete_task(c, done.id, now).unwrap();
+    let titles: Vec<String> = pending_before(c, day("2026-10-18"))
+        .unwrap()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    assert_eq!(titles, ["antiga", "sem data"]);
+}
+
+#[test]
+fn loose_reminders_between_ignores_task_reminders() {
+    let db = db();
+    let c = db.conn();
+    let now = at("2026-10-21 09:00");
+    create_task(
+        c,
+        new_task("tarefa", Some("2026-10-21"), Some("10:00")),
+        now,
+    )
+    .unwrap();
+    create_reminder(c, None, Some("dentro"), at("2026-10-22 23:59")).unwrap();
+    create_reminder(c, None, Some("fora"), at("2026-10-23 00:00")).unwrap();
+    let found = loose_reminders_between(c, day("2026-10-21"), day("2026-10-22")).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].title, "dentro");
+    delete_reminder(c, found[0].id).unwrap();
+    assert!(
+        loose_reminders_between(c, day("2026-10-21"), day("2026-10-22"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        delete_reminder(c, 999),
+        Err(AgendaError::NotFound(999))
+    ));
+}
+
+#[test]
+fn update_reminder_changes_text_and_rearms_when_moved_forward() {
+    let db = db();
+    let c = db.conn();
+    let r = create_reminder(c, None, Some("x"), at("2026-10-21 10:00")).unwrap();
+    mark_reminder_fired(c, r.id, at("2026-10-21 10:00")).unwrap();
+    let now = at("2026-10-21 11:00");
+    let same = update_reminder(c, r.id, "y", "detalhes", at("2026-10-21 10:00"), now).unwrap();
+    assert_eq!(same.title, "y");
+    assert_eq!(same.notes, "detalhes");
+    assert!(same.fired_at.is_some());
+    let moved = update_reminder(c, r.id, "y", "", at("2026-10-21 12:00"), now).unwrap();
+    assert!(moved.fired_at.is_none());
+    assert_eq!(next_reminder_time(c).unwrap(), Some(at("2026-10-21 12:00")));
+    assert!(matches!(
+        update_reminder(c, r.id, " ", "", at("2026-10-21 12:00"), now),
+        Err(AgendaError::EmptyTitle)
+    ));
+}

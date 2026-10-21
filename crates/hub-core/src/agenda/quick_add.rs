@@ -14,6 +14,34 @@ const CONNECTORS: &[&str] = &[
     "as", "a", "ao", "em", "no", "na", "dia", "para", "pra", "ate", "de", "proxima", "proximo",
 ];
 
+const REMINDER_PREFIXES: &[&str] = &[
+    "me lembra de ",
+    "me lembre de ",
+    "me lembra que ",
+    "me lembre que ",
+    "me lembra ",
+    "me lembre ",
+    "lembrar de ",
+    "lembrete: ",
+    "lembrete:",
+    "lembrete ",
+];
+
+pub fn strip_reminder_prefix(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    REMINDER_PREFIXES.iter().find_map(|prefix| {
+        text.get(..prefix.len())
+            .filter(|head| head.eq_ignore_ascii_case(prefix))
+            .map(|_| text[prefix.len()..].trim_start())
+    })
+}
+
+pub fn reminder_time(parsed: &ParsedTask) -> Option<NaiveDateTime> {
+    let date = parsed.date?;
+    let time = parsed.time.or_else(|| NaiveTime::from_hms_opt(9, 0, 0))?;
+    Some(date.and_time(time))
+}
+
 pub fn parse(text: &str, now: NaiveDateTime) -> ParsedTask {
     let original: Vec<&str> = text.split_whitespace().collect();
     let words: Vec<String> = original.iter().map(|w| normalize(w)).collect();
@@ -457,6 +485,36 @@ mod tests {
         }
         assert!(parse_time("25h").is_none());
         assert!(parse_time("abc").is_none());
+    }
+
+    #[test]
+    fn reminder_prefixes_are_detected() {
+        assert_eq!(
+            strip_reminder_prefix("Me lembra de beber água em 1 minuto"),
+            Some("beber água em 1 minuto")
+        );
+        assert_eq!(
+            strip_reminder_prefix("lembrete: tomar café 10h"),
+            Some("tomar café 10h")
+        );
+        assert_eq!(strip_reminder_prefix("lembrar de ligar"), Some("ligar"));
+        assert_eq!(strip_reminder_prefix("pagar conta"), None);
+        assert_eq!(strip_reminder_prefix("lembretes antigos"), None);
+    }
+
+    #[test]
+    fn reminder_time_defaults_to_nine_when_only_date() {
+        let only_date = parse("ligar amanhã", now());
+        assert_eq!(
+            reminder_time(&only_date).unwrap().to_string(),
+            "2026-10-22 09:00:00"
+        );
+        let with_time = parse("ligar em 10 minutos", now());
+        assert_eq!(
+            reminder_time(&with_time).unwrap().to_string(),
+            "2026-10-21 14:10:00"
+        );
+        assert!(reminder_time(&parse("ligar", now())).is_none());
     }
 
     #[test]

@@ -132,6 +132,12 @@ mod tests {
     }
 
     #[test]
+    fn missing_renderer_defaults_to_gpu() {
+        let config = Config::parse(Path::new("x"), "").unwrap();
+        assert_eq!(config.general.renderer, Renderer::Gpu);
+    }
+
+    #[test]
     fn invalid_file_returns_parse_error() {
         let result = Config::parse(Path::new("x"), "[geral\nrenderizador = 3");
         assert!(matches!(result, Err(ConfigError::Parse { .. })));
