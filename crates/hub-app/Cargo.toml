@@ -1,0 +1,22 @@
+[package]
+name = "hub-app"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "hub"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+hub-core.workspace = true
+hub-ui-kit.workspace = true
+section-agenda.workspace = true
+section-scripts.workspace = true
+section-atalhos.workspace = true
+section-whatsapp.workspace = true
+panel-ia.workspace = true
+panel-player.workspace = true
+hub-mcp.workspace = true
+tracing.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "panel-ia"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hub-core.workspace = true
