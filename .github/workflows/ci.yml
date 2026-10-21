@@ -17,6 +17,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: dependências do Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,3 +32,10 @@ jobs:
         run: cargo test --workspace
       - name: build
         run: cargo build --workspace --release
+      - name: fumaça
+        if: runner.os == 'Linux'
+        env:
+          ICED_BACKEND: tiny-skia
+        run: |
+          export HUB_HOME="$(mktemp -d)"
+          xvfb-run -a ./target/release/hub --smoke-test

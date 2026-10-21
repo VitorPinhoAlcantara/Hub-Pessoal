@@ -12,6 +12,9 @@ pub enum LoggingError {
     Subscriber(String),
 }
 
+const DEFAULT_FILTER: &str =
+    "info,iced_wgpu=warn,iced_winit=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn";
+
 pub fn init(logs_dir: &Path) -> Result<WorkerGuard, LoggingError> {
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
@@ -20,7 +23,8 @@ pub fn init(logs_dir: &Path) -> Result<WorkerGuard, LoggingError> {
         .max_log_files(7)
         .build(logs_dir)?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
-    let filter = EnvFilter::try_from_env("HUB_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_from_env("HUB_LOG").unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(writer)

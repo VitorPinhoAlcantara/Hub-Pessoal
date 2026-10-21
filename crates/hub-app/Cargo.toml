@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 hub-core.workspace = true
+iced.workspace = true
 hub-ui-kit.workspace = true
 section-agenda.workspace = true
 section-scripts.workspace = true
@@ -19,4 +20,5 @@ section-whatsapp.workspace = true
 panel-ia.workspace = true
 panel-player.workspace = true
 hub-mcp.workspace = true
+tokio.workspace = true
 tracing.workspace = true

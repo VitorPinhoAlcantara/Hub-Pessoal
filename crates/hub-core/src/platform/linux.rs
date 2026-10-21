@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::desktop_entry::{self, DesktopEntry};
-use super::{InstalledApp, MediaSession, Os, Platform, PlatformError, collect_files, dedup_apps};
+use super::{
+    ActionHandler, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
+    TrayHandler, TrayImage, collect_files, dedup_apps,
+};
 
 pub struct LinuxPlatform;
 
@@ -22,6 +25,12 @@ fn spawn_detached(program: &str, args: &[String]) -> Result<(), PlatformError> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+fn run_tray_loop() {
+    loop {
+        std::thread::park();
+    }
 }
 
 fn applications_dirs() -> Vec<PathBuf> {
@@ -129,6 +138,18 @@ impl Platform for LinuxPlatform {
             })
             .collect();
         Ok(dedup_apps(apps))
+    }
+
+    fn notify(
+        &self,
+        notification: Notification,
+        on_action: Option<ActionHandler>,
+    ) -> Result<(), PlatformError> {
+        super::notify::show(notification, on_action)
+    }
+
+    fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError> {
+        super::spawn_tray_thread(image, handler, run_tray_loop)
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {

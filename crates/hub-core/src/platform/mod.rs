@@ -1,6 +1,8 @@
 pub mod desktop_entry;
 mod fake;
+mod notify;
 pub mod script;
+mod tray;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -94,6 +96,30 @@ pub enum MediaCommand {
     Previous,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Notification {
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<(String, String)>,
+}
+
+pub type ActionHandler = Box<dyn FnOnce(Option<String>) + Send>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayEvent {
+    Open,
+    Quit,
+}
+
+pub type TrayHandler = Box<dyn Fn(TrayEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayImage {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait MediaSession: Send + Sync {
     fn current(&self) -> Result<Option<MediaInfo>, PlatformError>;
     fn send(&self, command: MediaCommand) -> Result<(), PlatformError>;
@@ -108,8 +134,51 @@ pub trait Platform: Send + Sync {
     fn script_command(&self, script: &Path) -> Result<CommandSpec, PlatformError> {
         script_command_for(script, self.os())
     }
+    fn notify(
+        &self,
+        notification: Notification,
+        on_action: Option<ActionHandler>,
+    ) -> Result<(), PlatformError>;
+    fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError>;
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError>;
     fn is_fullscreen_app_running(&self) -> bool;
+}
+
+fn spawn_tray_thread(
+    image: TrayImage,
+    handler: TrayHandler,
+    run_loop: fn(),
+) -> Result<(), PlatformError> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("hub-bandeja".to_string())
+        .spawn(move || match tray::build(image, "hub", handler) {
+            Ok(icon) => {
+                let _ = ready_tx.send(Ok(()));
+                run_loop();
+                drop(icon);
+            }
+            Err(error) => {
+                let _ = ready_tx.send(Err(error));
+            }
+        })?;
+    ready_rx.recv().unwrap_or_else(|_| {
+        Err(PlatformError::Launch {
+            target: "bandeja".to_string(),
+            reason: "a thread da bandeja terminou sem responder".to_string(),
+        })
+    })
+}
+
+pub fn preferred_gpu_backend() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        Some("dx12")
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 pub fn native() -> Arc<dyn Platform> {

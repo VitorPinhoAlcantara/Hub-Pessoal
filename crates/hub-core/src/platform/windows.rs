@@ -8,10 +8,14 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect, SW_SHOWNORMAL,
+    DispatchMessageW, GetDesktopWindow, GetForegroundWindow, GetMessageW, GetShellWindow,
+    GetWindowRect, MSG, SW_SHOWNORMAL, TranslateMessage,
 };
 
-use super::{InstalledApp, MediaSession, Os, Platform, PlatformError, collect_files, dedup_apps};
+use super::{
+    ActionHandler, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
+    TrayHandler, TrayImage, collect_files, dedup_apps,
+};
 
 pub struct WindowsPlatform;
 
@@ -39,6 +43,16 @@ fn shell_open(target: &OsStr) -> Result<(), PlatformError> {
             target: target.to_string_lossy().into_owned(),
             reason: format!("ShellExecute retornou {}", result as isize),
         })
+    }
+}
+
+fn run_tray_loop() {
+    unsafe {
+        let mut message: MSG = std::mem::zeroed();
+        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
     }
 }
 
@@ -89,6 +103,18 @@ impl Platform for WindowsPlatform {
             })
             .collect();
         Ok(dedup_apps(apps))
+    }
+
+    fn notify(
+        &self,
+        notification: Notification,
+        on_action: Option<ActionHandler>,
+    ) -> Result<(), PlatformError> {
+        super::notify::show(notification, on_action)
+    }
+
+    fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError> {
+        super::spawn_tray_thread(image, handler, run_tray_loop)
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {

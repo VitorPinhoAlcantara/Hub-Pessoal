@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+modo="${1:-janela}"
+renderizador="${2:-gpu}"
+espera="${ESPERA:-10}"
+
+raiz="$(cd "$(dirname "$0")/.." && pwd)"
+exe="$raiz/target/release/hub"
+if [ ! -x "$exe" ]; then
+    echo "Compile antes com: cargo build --release -p hub-app" >&2
+    exit 1
+fi
+
+HUB_HOME="$(mktemp -d)"
+export HUB_HOME
+if [ "$renderizador" = "software" ]; then
+    export ICED_BACKEND=tiny-skia
+fi
+
+if [ "$modo" = "bandeja" ]; then
+    "$exe" --bandeja &
+else
+    "$exe" &
+fi
+pid=$!
+sleep "$espera"
+if [ "$modo" = "fechada" ]; then
+    if command -v xdotool >/dev/null 2>&1; then
+        xdotool search --pid "$pid" windowclose 2>/dev/null || true
+    fi
+    sleep 4
+fi
+
+ticks_inicio="$(awk '{print $14 + $15}' "/proc/$pid/stat")"
+sleep 5
+ticks_fim="$(awk '{print $14 + $15}' "/proc/$pid/stat")"
+hz="$(getconf CLK_TCK)"
+cpu=$(( (ticks_fim - ticks_inicio) * 1000 / hz ))
+rss=$(( $(awk '/VmRSS/ {print $2}' "/proc/$pid/status") / 1024 ))
+
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+rm -rf "$HUB_HOME"
+
+linha="| $(date '+%Y-%m-%d %H:%M') | Linux | $modo | $renderizador | $rss MB | n/d | $cpu ms em 5 s |"
+echo "$linha"
+if [ "${SEM_REGISTRO:-0}" != "1" ]; then
+    echo "$linha" >> "$raiz/PROGRESSO.md"
+fi
