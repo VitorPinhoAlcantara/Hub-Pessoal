@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -18,6 +20,8 @@ const (
 	CmdListConversations = "listar_conversas"
 	CmdListMessages      = "listar_mensagens"
 	CmdSend              = "enviar"
+	CmdChatInfo          = "info_conversas"
+	CmdDownloadMedia     = "baixar_midia"
 	CmdShutdown          = "encerrar"
 )
 
@@ -26,6 +30,7 @@ const (
 	EventConnected       = "conectado"
 	EventMessageReceived = "mensagem_recebida"
 	EventDisconnected    = "desconectado"
+	EventArchived        = "arquivada"
 	EventError           = "erro"
 )
 
@@ -45,19 +50,25 @@ const (
 )
 
 type Command struct {
-	ID    int64  `json:"id"`
-	Cmd   string `json:"cmd"`
-	JID   string `json:"jid,omitempty"`
-	Text  string `json:"texto,omitempty"`
-	Limit int    `json:"limite,omitempty"`
+	ID        int64    `json:"id"`
+	Cmd       string   `json:"cmd"`
+	JID       string   `json:"jid,omitempty"`
+	Text      string   `json:"texto,omitempty"`
+	Limit     int      `json:"limite,omitempty"`
+	JIDs      []string `json:"jids,omitempty"`
+	Media     string   `json:"midia,omitempty"`
+	MessageID string   `json:"mensagem_id,omitempty"`
 }
 
 type rawCommand struct {
-	ID    *int64 `json:"id"`
-	Cmd   string `json:"cmd"`
-	JID   string `json:"jid"`
-	Text  string `json:"texto"`
-	Limit int    `json:"limite"`
+	ID        *int64   `json:"id"`
+	Cmd       string   `json:"cmd"`
+	JID       string   `json:"jid"`
+	Text      string   `json:"texto"`
+	Limit     int      `json:"limite"`
+	JIDs      []string `json:"jids"`
+	Media     string   `json:"midia"`
+	MessageID string   `json:"mensagem_id"`
 }
 
 type OKResponse struct {
@@ -73,12 +84,13 @@ type ErrorResponse struct {
 }
 
 type Event struct {
-	Name    string `json:"evento"`
-	Code    string `json:"codigo,omitempty"`
-	JID     string `json:"jid,omitempty"`
-	Message any    `json:"mensagem,omitempty"`
-	History bool   `json:"historico,omitempty"`
-	Reason  string `json:"motivo,omitempty"`
+	Name     string `json:"evento"`
+	Code     string `json:"codigo,omitempty"`
+	JID      string `json:"jid,omitempty"`
+	Message  any    `json:"mensagem,omitempty"`
+	History  bool   `json:"historico,omitempty"`
+	Reason   string `json:"motivo,omitempty"`
+	Archived *bool  `json:"arquivada,omitempty"`
 }
 
 type Message struct {
@@ -90,6 +102,18 @@ type Message struct {
 	Mine     bool   `json:"minha"`
 	At       int64  `json:"em"`
 	Kind     string `json:"tipo"`
+	Media    string `json:"midia,omitempty"`
+}
+
+type ChatInfo struct {
+	JID      string `json:"jid"`
+	Phone    string `json:"telefone,omitempty"`
+	Name     string `json:"nome,omitempty"`
+	Archived bool   `json:"arquivada"`
+}
+
+type DownloadResult struct {
+	Path string `json:"caminho"`
 }
 
 type Conversation struct {
@@ -112,11 +136,14 @@ func decodeCommand(line []byte) (Command, error) {
 		return Command{}, errors.New("comando sem o campo id")
 	}
 	cmd := Command{
-		ID:    *raw.ID,
-		Cmd:   strings.TrimSpace(raw.Cmd),
-		JID:   strings.TrimSpace(raw.JID),
-		Text:  raw.Text,
-		Limit: raw.Limit,
+		ID:        *raw.ID,
+		Cmd:       strings.TrimSpace(raw.Cmd),
+		JID:       strings.TrimSpace(raw.JID),
+		Text:      raw.Text,
+		Limit:     raw.Limit,
+		JIDs:      raw.JIDs,
+		Media:     raw.Media,
+		MessageID: strings.TrimSpace(raw.MessageID),
 	}
 	if cmd.Cmd == "" {
 		return cmd, errors.New("comando sem o campo cmd")
@@ -150,6 +177,61 @@ func disconnectedEvent(reason string) Event {
 
 func errorEvent(message string) Event {
 	return Event{Name: EventError, Message: message}
+}
+
+func archivedEvent(jid string, archived bool) Event {
+	return Event{Name: EventArchived, JID: jid, Archived: &archived}
+}
+
+func encodeImage(img *waE2E.ImageMessage) string {
+	if img == nil || img.GetDirectPath() == "" {
+		return ""
+	}
+	clone := proto.Clone(img).(*waE2E.ImageMessage)
+	clone.JPEGThumbnail = nil
+	clone.ContextInfo = nil
+	data, err := proto.Marshal(clone)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+func decodeImage(media string) (*waE2E.ImageMessage, error) {
+	data, err := base64.StdEncoding.DecodeString(media)
+	if err != nil {
+		return nil, fmt.Errorf("mídia inválida: %w", err)
+	}
+	var img waE2E.ImageMessage
+	if err := proto.Unmarshal(data, &img); err != nil {
+		return nil, fmt.Errorf("mídia inválida: %w", err)
+	}
+	if img.GetDirectPath() == "" {
+		return nil, errors.New("mídia sem caminho de download")
+	}
+	return &img, nil
+}
+
+func mediaFileName(id, mimetype string) string {
+	var name strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			name.WriteRune(r)
+		}
+	}
+	if name.Len() == 0 {
+		name.WriteString("imagem")
+	}
+	extension := ".jpg"
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimetype, ";")[0])) {
+	case "image/png":
+		extension = ".png"
+	case "image/webp":
+		extension = ".webp"
+	case "image/gif":
+		extension = ".gif"
+	}
+	return name.String() + extension
 }
 
 func classifyMessage(msg *waE2E.Message) (kind string, text string) {
@@ -237,13 +319,23 @@ func sentMessage(id string, chat types.JID, own types.JID, text string, at time.
 	}
 }
 
-func contactName(jid types.JID, info types.ContactInfo) string {
-	for _, candidate := range []string{info.FullName, info.FirstName, info.BusinessName, info.PushName} {
+func savedName(info types.ContactInfo) string {
+	for _, candidate := range []string{info.FullName, info.FirstName, info.BusinessName} {
 		if name := strings.TrimSpace(candidate); name != "" {
 			return name
 		}
 	}
-	return jid.User
+	return ""
+}
+
+func contactName(info types.ContactInfo) string {
+	if name := savedName(info); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(info.PushName); name != "" {
+		return name
+	}
+	return ""
 }
 
 func buildConversations(contacts map[types.JID]types.ContactInfo, groups []*types.GroupInfo) []Conversation {
@@ -254,7 +346,7 @@ func buildConversations(contacts map[types.JID]types.ContactInfo, groups []*type
 		}
 		result = append(result, Conversation{
 			JID:   jid.ToNonAD().String(),
-			Name:  contactName(jid, info),
+			Name:  contactName(info),
 			Group: false,
 		})
 	}

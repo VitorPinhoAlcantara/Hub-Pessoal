@@ -154,6 +154,18 @@ fn desktop_file(id: &str) -> Option<PathBuf> {
     })
 }
 
+pub(super) fn program_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/snap/bin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local").join("bin"));
+    }
+    dirs
+}
+
 fn resolve_target(target: &Path) -> Option<PathBuf> {
     if target.exists() {
         return Some(target.to_path_buf());

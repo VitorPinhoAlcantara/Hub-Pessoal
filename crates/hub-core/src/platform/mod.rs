@@ -1,3 +1,4 @@
+pub mod clipboard;
 pub mod desktop_entry;
 mod fake;
 pub mod ipc;
@@ -311,13 +312,37 @@ pub fn filter_apps<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<(usize, &'a
         .collect()
 }
 
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let extensions: Vec<String> = if cfg!(windows) {
+        vec![".exe".to_string()]
+    } else {
+        Vec::new()
+    };
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    #[cfg(windows)]
+    dirs.extend(windows::program_dirs(name));
+    #[cfg(target_os = "linux")]
+    dirs.extend(linux::program_dirs());
+    find_in_dirs(name, dirs, &extensions)
+}
+
 pub fn find_in_path(name: &str, path_var: &OsStr, extensions: &[String]) -> Option<PathBuf> {
+    find_in_dirs(name, std::env::split_paths(path_var), extensions)
+}
+
+pub fn find_in_dirs(
+    name: &str,
+    dirs: impl IntoIterator<Item = PathBuf>,
+    extensions: &[String],
+) -> Option<PathBuf> {
     let name = name.trim();
     if name.is_empty() || name.contains(['/', '\\']) {
         return None;
     }
     let has_extension = Path::new(name).extension().is_some();
-    for dir in std::env::split_paths(path_var) {
+    for dir in dirs {
         let plain = dir.join(name);
         if (has_extension || extensions.is_empty()) && plain.is_file() {
             return Some(plain);

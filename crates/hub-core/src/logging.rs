@@ -31,5 +31,11 @@ pub fn init(logs_dir: &Path) -> Result<WorkerGuard, LoggingError> {
         .with_ansi(false)
         .try_init()
         .map_err(|error| LoggingError::Subscriber(error.to_string()))?;
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(%info, %backtrace, "o hub encerrou por um erro interno");
+        default_hook(info);
+    }));
     Ok(guard)
 }

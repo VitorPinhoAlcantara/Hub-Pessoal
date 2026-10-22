@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
@@ -205,8 +207,19 @@ pub struct MpvProcess {
 }
 
 impl MpvProcess {
-    pub fn spawn(program: &str, ipc_path: &str, volume: f64) -> std::io::Result<Self> {
+    pub fn spawn(
+        program: &Path,
+        ytdlp: Option<&Path>,
+        ipc_path: &str,
+        volume: f64,
+    ) -> std::io::Result<Self> {
         let mut command = std::process::Command::new(program);
+        if let Some(ytdlp) = ytdlp {
+            command.arg(format!(
+                "--script-opts=ytdl_hook-ytdl_path={}",
+                ytdlp.display()
+            ));
+        }
         command
             .arg("--idle=yes")
             .arg("--no-video")
@@ -240,6 +253,8 @@ impl Drop for MpvProcess {
 pub struct Tools {
     pub mpv: Option<String>,
     pub ytdlp: Option<String>,
+    pub mpv_path: Option<PathBuf>,
+    pub ytdlp_path: Option<PathBuf>,
 }
 
 impl Tools {
@@ -248,7 +263,7 @@ impl Tools {
     }
 }
 
-pub fn version(program: &str, arg: &str) -> Option<String> {
+pub fn version(program: impl AsRef<OsStr>, arg: &str) -> Option<String> {
     let mut command = std::process::Command::new(program);
     command.arg(arg).stdin(Stdio::null());
     platform::hide_console_std(&mut command);
@@ -264,14 +279,23 @@ pub fn version(program: &str, arg: &str) -> Option<String> {
 }
 
 pub fn check_tools() -> Tools {
+    let mpv_path = platform::find_program("mpv");
+    let ytdlp_path = platform::find_program("yt-dlp");
     Tools {
-        mpv: version("mpv", "--version"),
-        ytdlp: version("yt-dlp", "--version"),
+        mpv: mpv_path
+            .as_ref()
+            .and_then(|path| version(path, "--version")),
+        ytdlp: ytdlp_path
+            .as_ref()
+            .and_then(|path| version(path, "--version")),
+        mpv_path,
+        ytdlp_path,
     }
 }
 
 pub fn update_ytdlp() -> String {
-    let mut command = std::process::Command::new("yt-dlp");
+    let program = platform::find_program("yt-dlp").unwrap_or_else(|| PathBuf::from("yt-dlp"));
+    let mut command = std::process::Command::new(program);
     command.arg("-U").stdin(Stdio::null());
     platform::hide_console_std(&mut command);
     match command.output() {

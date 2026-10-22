@@ -19,6 +19,7 @@ panel-player = { path = "crates/panel-player" }
 hub-mcp = { path = "crates/hub-mcp" }
 
 anyhow = "1.0.104"
+arboard = "3.6"
 base64 = "0.22.1"
 chrono = "0.4.45"
 cron = "0.17.0"

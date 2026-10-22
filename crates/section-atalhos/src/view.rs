@@ -4,12 +4,14 @@ use hub_ui_kit::iced::widget::image::Handle;
 use hub_ui_kit::iced::widget::{
     Column, Row, button, column, container, image, mouse_area, row, scrollable, space, text,
 };
-use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding};
+use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding, mouse};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
 
-use crate::{Apps, FormMessage, Message, Modal, ShortcutForm, Shortcuts, VISIBLE_APPS, ellipsize};
+use crate::{
+    Apps, DragItem, FormMessage, Message, Modal, ShortcutForm, Shortcuts, VISIBLE_APPS, ellipsize,
+};
 
 const TILE_SIZE: f32 = 144.0;
 const TILE_ICON: f32 = 44.0;
@@ -111,15 +113,8 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
         scroll(
             groups
                 .into_iter()
-                .fold(Column::new().spacing(units(5)), |col, (group, items)| {
-                    let tiles = items
-                        .into_iter()
-                        .fold(Row::new().spacing(units(3)), |r, (index, shortcut)| {
-                            r.push(tile(section, index, shortcut))
-                        })
-                        .wrap()
-                        .vertical_spacing(units(3));
-                    col.push(column![heading(group), tiles].spacing(units(2)))
+                .fold(Column::new().spacing(units(3)), |col, (group, items)| {
+                    col.push(group_view(section, group, items))
                 }),
         )
     };
@@ -151,6 +146,68 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
     }
 }
 
+fn group_view<'a>(
+    section: &'a Shortcuts,
+    group: String,
+    items: Vec<(usize, &'a Shortcut)>,
+) -> Element<'a, Message> {
+    let collapsed = section.is_collapsed(&group);
+    let dragging = section.dragging();
+    let hovered = section.hovered_group() == Some(group.as_str());
+    let highlight = hovered
+        && match dragging {
+            Some(DragItem::Group(source)) => *source != group,
+            Some(DragItem::Shortcut(_)) => section.hovered_tile().is_none(),
+            None => false,
+        };
+    let faded = matches!(dragging, Some(DragItem::Group(source)) if *source == group);
+    let header = mouse_area(
+        row![
+            icon(
+                if collapsed {
+                    Icon::ChevronUp
+                } else {
+                    Icon::ChevronDown
+                },
+                ICON_SIZE - 4.0,
+                TEXT_SECONDARY
+            ),
+            heading(group.clone()),
+            small(items.len().to_string()).color(TEXT_SECONDARY),
+            space().width(Length::Fill),
+        ]
+        .spacing(units(2))
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::GroupPressed(group.clone()))
+    .interaction(if faded {
+        mouse::Interaction::Grabbing
+    } else {
+        mouse::Interaction::Pointer
+    });
+    let mut content = Column::new().spacing(units(2)).push(header);
+    if !collapsed {
+        content = content.push(
+            items
+                .into_iter()
+                .fold(Row::new().spacing(units(3)), |r, (index, shortcut)| {
+                    r.push(tile(section, index, shortcut))
+                })
+                .wrap()
+                .vertical_spacing(units(3)),
+        );
+    }
+    mouse_area(
+        container(content)
+            .padding(units(2))
+            .width(Length::Fill)
+            .style(style::drop_zone(highlight, faded)),
+    )
+    .on_enter(Message::GroupHovered(group.clone()))
+    .on_exit(Message::GroupLeft(group))
+    .into()
+}
+
 fn tile<'a>(section: &'a Shortcuts, index: usize, shortcut: &'a Shortcut) -> Element<'a, Message> {
     let target = shortcut.target.for_os(section.os());
     let available = target.is_some();
@@ -178,19 +235,33 @@ fn tile<'a>(section: &'a Shortcuts, index: usize, shortcut: &'a Shortcut) -> Ele
     ]
     .spacing(units(2))
     .align_x(Alignment::Center);
-    let card = button(
+    let dragging = section.dragging();
+    let moving = dragging == Some(&DragItem::Shortcut(index));
+    let target = matches!(dragging, Some(DragItem::Shortcut(_)))
+        && !moving
+        && section.hovered_tile() == Some(index);
+    let inner = mouse_area(
         container(content)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .clip(true),
     )
-    .padding(units(3))
-    .width(TILE_SIZE)
-    .height(TILE_SIZE)
-    .style(style::selectable(false))
-    .on_press_maybe(available.then_some(Message::Open(index)));
+    .on_press(Message::ShortcutPressed(index))
+    .interaction(if moving {
+        mouse::Interaction::Grabbing
+    } else {
+        mouse::Interaction::Pointer
+    });
+    let card = button(inner)
+        .padding(units(3))
+        .width(TILE_SIZE)
+        .height(TILE_SIZE)
+        .style(style::selectable(target))
+        .on_press_maybe((available && !moving).then_some(Message::Open(index)));
     mouse_area(card)
         .on_right_press(Message::CardMenu(index))
+        .on_enter(Message::TileHovered(index))
+        .on_exit(Message::TileLeft(index))
         .into()
 }
 

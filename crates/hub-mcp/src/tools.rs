@@ -10,7 +10,7 @@ use hub_core::platform::Os;
 use hub_core::platform::terminal;
 use hub_core::player::{self, PlayerCommand};
 use hub_core::scripts::{self, NewScript, Origin, runner};
-use hub_core::shortcuts::{self, Shortcut, ShortcutKind};
+use hub_core::shortcuts::{self, MoveTarget, Shortcut, ShortcutKind};
 use hub_core::whatsapp;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -282,6 +282,38 @@ pub struct ShortcutIndexRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveShortcutRequest {
+    #[schemars(description = "Índice do atalho a mover (veja atalhos_listar)")]
+    pub indice: usize,
+    #[schemars(
+        description = "Índice do atalho que vai ocupar a posição; o atalho movido entra no grupo dele. No mesmo grupo, vindo de antes, fica logo depois dele"
+    )]
+    pub para_indice: Option<usize>,
+    #[schemars(
+        description = "Grupo de destino, usado quando não há para_indice; o atalho vai para o fim do grupo"
+    )]
+    pub grupo: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveGroupRequest {
+    #[schemars(description = "Nome do grupo a mover")]
+    pub grupo: String,
+    #[schemars(
+        description = "Grupo que vai ocupar a posição: vindo de antes, fica depois dele; vindo de depois, fica antes dele"
+    )]
+    pub para_grupo: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CollapseGroupRequest {
+    #[schemars(description = "Nome do grupo")]
+    pub grupo: String,
+    #[schemars(description = "true recolhe, false expande")]
+    pub recolhido: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenShortcutRequest {
     #[schemars(description = "Índice do atalho (veja atalhos_listar)")]
     pub indice: Option<usize>,
@@ -329,6 +361,10 @@ pub struct ConversationsRequest {
     pub busca: Option<String>,
     #[schemars(description = "Quantidade máxima, padrão 30")]
     pub limite: Option<usize>,
+    #[schemars(
+        description = "true lista só as arquivadas, false só as não arquivadas; omitido lista todas"
+    )]
+    pub arquivadas: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -871,8 +907,89 @@ impl HubTools {
                 })
             })
             .collect();
-        Ok(text(
-            &json!({ "atalhos": list, "problema": loaded.problem }),
+        Ok(text(&json!({
+            "atalhos": list,
+            "grupos": shortcuts::groups(&loaded.shortcuts),
+            "recolhidos": loaded.collapsed,
+            "problema": loaded.problem,
+        })))
+    }
+
+    #[tool(
+        description = "Muda a posição de um atalho: para a posição de outro atalho (para_indice) ou para o fim de um grupo (grupo). Os índices mudam depois de mover"
+    )]
+    async fn atalhos_mover(
+        &self,
+        Parameters(request): Parameters<MoveShortcutRequest>,
+    ) -> Result<String, String> {
+        let target = match (request.para_indice, request.grupo) {
+            (Some(index), _) => MoveTarget::Shortcut(index),
+            (None, Some(group)) if !group.trim().is_empty() => {
+                MoveTarget::GroupEnd(group.trim().to_string())
+            }
+            _ => return Err("informe para_indice ou grupo".to_string()),
+        };
+        if let MoveTarget::Shortcut(index) = target
+            && index >= self.ctx.shortcuts().shortcuts.len()
+        {
+            return Err(format!("atalho {index} não encontrado"));
+        }
+        self.ctx
+            .shortcut_store()
+            .move_shortcut(&self.ctx.paths.shortcuts_file(), request.indice, target)
+            .map_err(err)?;
+        self.ctx.events.publish(HubEvent::ShortcutsChanged);
+        Ok("Atalho movido".to_string())
+    }
+
+    #[tool(description = "Muda a ordem dos grupos de atalhos")]
+    async fn atalhos_grupo_mover(
+        &self,
+        Parameters(request): Parameters<MoveGroupRequest>,
+    ) -> Result<String, String> {
+        let groups = shortcuts::groups(&self.ctx.shortcuts().shortcuts);
+        for group in [&request.grupo, &request.para_grupo] {
+            if !groups.contains(group) {
+                return Err(format!("grupo {group} não encontrado"));
+            }
+        }
+        self.ctx
+            .shortcut_store()
+            .move_group(
+                &self.ctx.paths.shortcuts_file(),
+                &request.grupo,
+                &request.para_grupo,
+            )
+            .map_err(err)?;
+        self.ctx.events.publish(HubEvent::ShortcutsChanged);
+        Ok(format!("Grupo {} movido", request.grupo))
+    }
+
+    #[tool(description = "Recolhe ou expande um grupo de atalhos na aba Atalhos")]
+    async fn atalhos_grupo_recolher(
+        &self,
+        Parameters(request): Parameters<CollapseGroupRequest>,
+    ) -> Result<String, String> {
+        if !shortcuts::groups(&self.ctx.shortcuts().shortcuts).contains(&request.grupo) {
+            return Err(format!("grupo {} não encontrado", request.grupo));
+        }
+        self.ctx
+            .shortcut_store()
+            .set_collapsed(
+                &self.ctx.paths.shortcuts_file(),
+                &request.grupo,
+                request.recolhido,
+            )
+            .map_err(err)?;
+        self.ctx.events.publish(HubEvent::ShortcutsChanged);
+        Ok(format!(
+            "Grupo {} {}",
+            request.grupo,
+            if request.recolhido {
+                "recolhido"
+            } else {
+                "expandido"
+            }
         ))
     }
 
@@ -922,7 +1039,7 @@ impl HubTools {
             .iter()
             .map(|m| {
                 json!({
-                    "de": if m.mine { "eu".to_string() } else if m.sender_name.is_empty() { m.sender.clone() } else { m.sender_name.clone() },
+                    "de": if m.mine { "eu".to_string() } else { m.sender_label() },
                     "texto": m.display_text(),
                     "em": m.at.format("%Y-%m-%d %H:%M").to_string(),
                 })
@@ -1641,7 +1758,7 @@ impl HubTools {
     }
 
     #[tool(
-        description = "Lista as conversas do WhatsApp guardadas no hub, com apelido, nome, se é grupo e a última mensagem"
+        description = "Lista as conversas do WhatsApp guardadas no hub, com apelido, nome, se é grupo, se está arquivada e a última mensagem"
     )]
     async fn whatsapp_conversas(
         &self,
@@ -1652,6 +1769,11 @@ impl HubTools {
         let conversations = whatsapp::conversations(self.ctx.db().conn()).map_err(err)?;
         let list: Vec<serde_json::Value> = conversations
             .iter()
+            .filter(|c| {
+                request
+                    .arquivadas
+                    .is_none_or(|archived| c.archived == archived)
+            })
             .filter(|c| c.matches(&query))
             .take(limit)
             .map(|c| {
@@ -1661,6 +1783,7 @@ impl HubTools {
                     "nome": c.name,
                     "apelido": c.alias,
                     "grupo": c.group,
+                    "arquivada": c.archived,
                     "ultima_em": c.last_at.map(|at| at.format("%Y-%m-%d %H:%M").to_string()),
                     "previa": c.preview,
                 })

@@ -29,6 +29,7 @@ fn missing() -> Tools {
     Tools {
         mpv: None,
         ytdlp: Some("2026.10.01".into()),
+        ..Tools::default()
     }
 }
 
@@ -143,6 +144,7 @@ fn view_builds_collapsed_and_expanded() {
     let mut ready = self::player(Tools {
         mpv: Some("mpv 0.40".into()),
         ytdlp: Some("2026.10.01".into()),
+        ..Tools::default()
     });
     send(
         &mut ready,

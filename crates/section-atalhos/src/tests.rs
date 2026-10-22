@@ -386,3 +386,113 @@ fn view_builds_in_every_state() {
     send(&mut section, [Message::ModalClosed, Message::CardMenu(0)]);
     let _ = section.view();
 }
+
+fn order(section: &Shortcuts) -> Vec<String> {
+    section
+        .shortcuts()
+        .iter()
+        .map(|s| format!("{}:{}", s.group, s.name))
+        .collect()
+}
+
+fn far() -> Point {
+    Point::new(10_000.0, 10_000.0)
+}
+
+#[test]
+fn click_without_moving_opens_shortcut() {
+    let (mut section, platform, _temp) = setup(Vec::new());
+    add(
+        &mut section,
+        "Site",
+        ShortcutKind::Url,
+        "exemplo.com",
+        "Web",
+    );
+    send(
+        &mut section,
+        [Message::ShortcutPressed(0), Message::DragReleased],
+    );
+    assert!(
+        platform
+            .calls()
+            .contains(&PlatformCall::OpenUrl("https://exemplo.com".into()))
+    );
+    assert!(section.drag().is_none());
+}
+
+#[test]
+fn dragging_shortcuts_reorders_and_changes_group() {
+    let (mut section, platform, _temp) = setup(Vec::new());
+    add(&mut section, "A", ShortcutKind::Url, "a.com", "G1");
+    add(&mut section, "B", ShortcutKind::Url, "b.com", "G1");
+    add(&mut section, "X", ShortcutKind::Url, "x.com", "G2");
+    send(
+        &mut section,
+        [
+            Message::ShortcutPressed(0),
+            Message::DragMoved(far()),
+            Message::GroupHovered("G1".into()),
+            Message::TileHovered(1),
+        ],
+    );
+    assert_eq!(section.dragging(), Some(&DragItem::Shortcut(0)));
+    let _ = section.view();
+    send(&mut section, [Message::DragReleased]);
+    assert_eq!(order(&section), ["G1:B", "G1:A", "G2:X"]);
+    send(
+        &mut section,
+        [
+            Message::TileLeft(1),
+            Message::GroupLeft("G1".into()),
+            Message::ShortcutPressed(0),
+            Message::DragMoved(far()),
+            Message::GroupHovered("G2".into()),
+            Message::DragReleased,
+        ],
+    );
+    assert_eq!(order(&section), ["G1:A", "G2:X", "G2:B"]);
+    assert!(platform.calls().is_empty());
+}
+
+#[test]
+fn dragging_group_header_reorders_groups() {
+    let (mut section, _platform, _temp) = setup(Vec::new());
+    add(&mut section, "A", ShortcutKind::Url, "a.com", "G1");
+    add(&mut section, "X", ShortcutKind::Url, "x.com", "G2");
+    send(
+        &mut section,
+        [
+            Message::GroupPressed("G2".into()),
+            Message::DragMoved(far()),
+            Message::GroupHovered("G1".into()),
+        ],
+    );
+    let _ = section.view();
+    send(&mut section, [Message::DragReleased]);
+    assert_eq!(order(&section), ["G2:X", "G1:A"]);
+}
+
+#[test]
+fn clicking_group_header_collapses_and_persists() {
+    let (mut section, _platform, temp) = setup(Vec::new());
+    add(&mut section, "A", ShortcutKind::Url, "a.com", "G1");
+    send(
+        &mut section,
+        [Message::GroupPressed("G1".into()), Message::DragReleased],
+    );
+    assert!(section.is_collapsed("G1"));
+    let _ = section.view();
+    let saved = std::fs::read_to_string(HubPaths::from_home(temp.path()).shortcuts_file()).unwrap();
+    assert!(saved.contains("recolhidos"));
+    send(&mut section, [Message::QueryChanged("a".into())]);
+    assert!(!section.is_collapsed("G1"));
+    send(
+        &mut section,
+        [
+            Message::QueryChanged(String::new()),
+            Message::GroupToggled("G1".into()),
+        ],
+    );
+    assert!(!section.is_collapsed("G1"));
+}

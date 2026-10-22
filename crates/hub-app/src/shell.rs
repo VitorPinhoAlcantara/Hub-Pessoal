@@ -240,13 +240,19 @@ fn main_area(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
     match (&app.player, app.player_open) {
-        (Some(player), true) => stack![area, player_overlay(player)].into(),
+        (Some(player), true) => stack![area, player_overlay(app, player)].into(),
         _ => area.into(),
     }
 }
 
-fn player_overlay(player: &panel_player::Player) -> Element<'_, Message> {
-    let card = player.view().map(Message::Player);
+fn player_overlay<'a>(app: &'a App, player: &'a panel_player::Player) -> Element<'a, Message> {
+    let card = mouse_area(player.view().map(Message::Player))
+        .on_press(Message::PlayerDragStart)
+        .interaction(if app.player_drag.is_some() {
+            mouse::Interaction::Grabbing
+        } else {
+            mouse::Interaction::Grab
+        });
     container(opaque(card))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -254,8 +260,8 @@ fn player_overlay(player: &panel_player::Player) -> Element<'_, Message> {
         .align_bottom(Length::Fill)
         .padding(
             Padding::default()
-                .right(GAP_PANEL * 3.0)
-                .bottom(GAP_PANEL * 3.0),
+                .right(GAP_PANEL * 3.0 + app.player_offset.x)
+                .bottom(GAP_PANEL * 3.0 + app.player_offset.y),
         )
         .into()
 }

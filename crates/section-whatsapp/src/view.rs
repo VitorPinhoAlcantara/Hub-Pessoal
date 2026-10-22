@@ -2,16 +2,17 @@ use hub_core::agenda::recurrence::weekday_short;
 use hub_core::chrono::{Datelike, Local, NaiveDateTime};
 use hub_core::whatsapp::{Conversation, Message as ChatMessage};
 use hub_ui_kit::iced::widget::{
-    Column, button, column, container, mouse_area, qr_code, row, scrollable, space, text,
+    Column, button, column, container, image, mouse_area, qr_code, row, scrollable, space, text,
 };
 use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
 
-use crate::{Connection, Message, WhatsApp};
+use crate::{Connection, Media, Message, VISIBLE_CONVERSATIONS, WhatsApp};
 
 const LIST_WIDTH: f32 = 300.0;
+const IMAGE_WIDTH: f32 = 320.0;
 const WHATSAPP_GREEN: Color = Color::from_rgb8(0x4F, 0xC3, 0x7A);
 
 fn short_time(at: NaiveDateTime) -> String {
@@ -95,6 +96,7 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
 fn list(section: &WhatsApp) -> Element<'_, Message> {
     let selected = section.selected().map(|c| c.jid.clone());
     let items = section.conversations();
+    let total = items.len();
     let body: Element<'_, Message> = if items.is_empty() {
         container(muted(if section.query().is_empty() {
             "Nenhuma conversa ainda. Elas aparecem conforme as mensagens chegam."
@@ -104,12 +106,41 @@ fn list(section: &WhatsApp) -> Element<'_, Message> {
         .padding(units(4))
         .into()
     } else {
-        scroll(items.into_iter().fold(Column::new().spacing(2), |col, c| {
-            col.push(conversation_item(
-                c,
-                selected.as_deref() == Some(c.jid.as_str()),
-            ))
-        }))
+        let mut column = items.into_iter().take(VISIBLE_CONVERSATIONS).fold(
+            Column::new().spacing(2),
+            |col, c| {
+                col.push(conversation_item(
+                    c,
+                    selected.as_deref() == Some(c.jid.as_str()),
+                ))
+            },
+        );
+        if total > VISIBLE_CONVERSATIONS {
+            column = column.push(
+                container(small(format!(
+                    "Mostrando {VISIBLE_CONVERSATIONS} de {total}. Use a busca para achar as outras."
+                )))
+                .padding(units(2)),
+            );
+        }
+        scroll(column)
+    };
+    let archived = section.archived_count();
+    let footer: Element<'_, Message> = if section.showing_archived() {
+        icon_label_button(
+            Icon::List,
+            "Voltar às conversas",
+            Some(Message::ArchivedToggled),
+        )
+        .into()
+    } else if archived > 0 {
+        button(text(format!("Arquivadas ({archived})")).size(FONT_SIZE))
+            .padding([units(2), units(3)])
+            .style(style::ghost)
+            .on_press(Message::ArchivedToggled)
+            .into()
+    } else {
+        space().into()
     };
     container(
         column![
@@ -120,7 +151,8 @@ fn list(section: &WhatsApp) -> Element<'_, Message> {
             ]
             .align_y(Alignment::Center),
             text_field("Buscar conversa", section.query(), Message::QueryChanged),
-            body,
+            container(body).height(Length::Fill),
+            footer,
         ]
         .spacing(units(3)),
     )
@@ -129,22 +161,41 @@ fn list(section: &WhatsApp) -> Element<'_, Message> {
     .into()
 }
 
-fn bubble<'a>(message: &'a ChatMessage, group: bool) -> Element<'a, Message> {
+fn media_view<'a>(section: &'a WhatsApp, message: &'a ChatMessage) -> Element<'a, Message> {
+    let open = Message::MediaRequested(message.id.clone());
+    match section.media(&message.id) {
+        Some(Media::Ready(handle, _)) => mouse_area(image(handle.clone()).width(IMAGE_WIDTH))
+            .on_press(open)
+            .interaction(hub_ui_kit::iced::mouse::Interaction::Pointer)
+            .into(),
+        Some(Media::Loading) => small("Baixando imagem").into(),
+        Some(Media::Failed(error)) => column![
+            small(error.as_str()).color(DANGER),
+            icon_label_button(Icon::Refresh, "Tentar de novo", Some(open)),
+        ]
+        .spacing(units(1))
+        .into(),
+        None => icon_label_button(Icon::Image, "Ver imagem", Some(open)).into(),
+    }
+}
+
+fn bubble<'a>(
+    section: &'a WhatsApp,
+    message: &'a ChatMessage,
+    group: bool,
+) -> Element<'a, Message> {
     let mut content = Column::new().spacing(2);
     if group && !message.mine {
-        let name = if message.sender_name.trim().is_empty() {
-            message
-                .sender
-                .split('@')
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            message.sender_name.clone()
-        };
-        content = content.push(small(name).color(WHATSAPP_GREEN));
+        content = content.push(small(message.sender_label()).color(WHATSAPP_GREEN));
     }
-    content = content.push(body(message.display_text()));
+    if message.has_media() {
+        content = content.push(media_view(section, message));
+        if !message.text.trim().is_empty() {
+            content = content.push(body(message.text.as_str()));
+        }
+    } else {
+        content = content.push(body(message.display_text()));
+    }
     content = content
         .push(container(small(message.at.format("%H:%M").to_string())).align_right(Length::Shrink));
     let bubble = container(content)
@@ -254,8 +305,8 @@ fn chat(section: &WhatsApp) -> Element<'_, Message> {
             let mut info = column![heading(conversation.title())].spacing(2);
             if conversation.alias.is_some() && !conversation.name.is_empty() {
                 info = info.push(small(conversation.name.as_str()));
-            } else {
-                info = info.push(small(conversation.jid.as_str()));
+            } else if conversation.group {
+                info = info.push(small("Grupo"));
             }
             row![
                 info.width(Length::Fill),
@@ -277,7 +328,7 @@ fn chat(section: &WhatsApp) -> Element<'_, Message> {
                     .messages()
                     .iter()
                     .fold(Column::new().spacing(units(2)), |col, m| {
-                        col.push(bubble(m, conversation.group))
+                        col.push(bubble(section, m, conversation.group))
                     }),
             )
             .padding(Padding::default().right(units(3))),

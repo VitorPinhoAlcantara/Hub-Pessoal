@@ -11,15 +11,29 @@ use std::sync::Arc;
 use hub_core::HubContext;
 use hub_core::per_os::PerOs;
 use hub_core::platform::{self, FileIcon, InstalledApp, Os, Platform};
-use hub_core::shortcuts::{self, DEFAULT_GROUP, Loaded, Shortcut, ShortcutKind};
+use hub_core::shortcuts::{self, DEFAULT_GROUP, Loaded, MoveTarget, Shortcut, ShortcutKind};
 use hub_ui_kit::iced::futures::{Stream, stream};
 use hub_ui_kit::iced::keyboard::{self, key};
 use hub_ui_kit::iced::widget::image::Handle;
-use hub_ui_kit::iced::{Element, Event, Subscription, Task, event};
+use hub_ui_kit::iced::{Element, Event, Point, Subscription, Task, event, mouse};
 use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, dialog};
 
 pub const VISIBLE_APPS: usize = 60;
+pub const DRAG_THRESHOLD: f32 = 6.0;
 const ICON_BATCH: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DragItem {
+    Shortcut(usize),
+    Group(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drag {
+    pub item: DragItem,
+    pub start: Point,
+    pub active: bool,
+}
 
 #[derive(Debug, Clone)]
 pub enum FormMessage {
@@ -161,6 +175,15 @@ pub enum Message {
     IconsLoaded(Vec<(PathBuf, Option<Handle>)>),
     ModalClosed,
     ErrorDismissed,
+    ShortcutPressed(usize),
+    GroupPressed(String),
+    DragMoved(Point),
+    DragReleased,
+    TileHovered(usize),
+    TileLeft(usize),
+    GroupHovered(String),
+    GroupLeft(String),
+    GroupToggled(String),
 }
 
 pub struct Shortcuts {
@@ -174,6 +197,9 @@ pub struct Shortcuts {
     app_query: String,
     form_error: Option<String>,
     error: Option<String>,
+    drag: Option<Drag>,
+    hovered_tile: Option<usize>,
+    hovered_group: Option<String>,
 }
 
 pub fn ellipsize(text: &str, max: usize) -> String {
@@ -214,7 +240,30 @@ impl Shortcuts {
             app_query: String::new(),
             form_error: None,
             error: None,
+            drag: None,
+            hovered_tile: None,
+            hovered_group: None,
         }
+    }
+
+    pub fn drag(&self) -> Option<&Drag> {
+        self.drag.as_ref()
+    }
+
+    pub fn dragging(&self) -> Option<&DragItem> {
+        self.drag.as_ref().filter(|d| d.active).map(|d| &d.item)
+    }
+
+    pub fn hovered_tile(&self) -> Option<usize> {
+        self.hovered_tile
+    }
+
+    pub fn hovered_group(&self) -> Option<&str> {
+        self.hovered_group.as_deref()
+    }
+
+    pub fn is_collapsed(&self, group: &str) -> bool {
+        self.query.trim().is_empty() && self.loaded.collapsed.iter().any(|g| g == group)
     }
 
     pub fn shortcuts(&self) -> &[Shortcut] {
@@ -395,6 +444,52 @@ impl Shortcuts {
         }
     }
 
+    fn open(&mut self, index: usize) {
+        if let Some(shortcut) = self.shortcuts().get(index)
+            && let Err(error) = shortcuts::open(self.ctx.platform.as_ref(), shortcut)
+        {
+            self.error = Some(format!("Não foi possível abrir {}: {error}", shortcut.name));
+        }
+    }
+
+    fn toggle_group(&mut self, group: &str) {
+        let collapsed = !self.loaded.collapsed.iter().any(|g| g == group);
+        let path = self.ctx.paths.shortcuts_file();
+        let result = self
+            .ctx
+            .shortcut_store()
+            .set_collapsed(&path, group, collapsed);
+        match result {
+            Ok(()) => self.reload(),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn drop_drag(&mut self, item: DragItem) {
+        let path = self.ctx.paths.shortcuts_file();
+        let result = match item {
+            DragItem::Shortcut(from) => {
+                let target = match (self.hovered_tile, &self.hovered_group) {
+                    (Some(tile), _) if tile != from => Some(MoveTarget::Shortcut(tile)),
+                    (Some(_), _) => None,
+                    (None, Some(group)) => Some(MoveTarget::GroupEnd(group.clone())),
+                    (None, None) => None,
+                };
+                target.map(|target| self.ctx.shortcut_store().move_shortcut(&path, from, target))
+            }
+            DragItem::Group(group) => self
+                .hovered_group
+                .clone()
+                .filter(|target| *target != group)
+                .map(|target| self.ctx.shortcut_store().move_group(&path, &group, &target)),
+        };
+        match result {
+            Some(Ok(())) => self.reload(),
+            Some(Err(error)) => self.error = Some(error.to_string()),
+            None => {}
+        }
+    }
+
     fn apply_picked(&mut self, path: Option<PathBuf>, kind: ShortcutKind) {
         let os = self.os();
         if let (Some(path), Some(Modal::Form(form))) = (path, &mut self.modal) {
@@ -440,6 +535,20 @@ fn load_icons(job: &IconJob) -> impl Stream<Item = Message> + use<> {
     })
 }
 
+fn drag_events(
+    event: Event,
+    _status: event::Status,
+    _window: hub_ui_kit::iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Message::DragMoved(position)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::DragReleased)
+        }
+        _ => None,
+    }
+}
+
 fn listen(
     event: Event,
     _status: event::Status,
@@ -464,20 +573,21 @@ impl Section for Shortcuts {
     fn update(&mut self, message: Message) -> Task<Message> {
         if !matches!(
             message,
-            Message::AppsLoaded(_) | Message::IconsLoaded(_) | Message::Refresh
+            Message::AppsLoaded(_)
+                | Message::IconsLoaded(_)
+                | Message::Refresh
+                | Message::DragMoved(_)
+                | Message::TileHovered(_)
+                | Message::TileLeft(_)
+                | Message::GroupHovered(_)
+                | Message::GroupLeft(_)
         ) {
             self.menu = None;
         }
         match message {
             Message::Refresh => self.reload(),
             Message::QueryChanged(query) => self.query = query,
-            Message::Open(index) => {
-                if let Some(shortcut) = self.shortcuts().get(index)
-                    && let Err(error) = shortcuts::open(self.ctx.platform.as_ref(), shortcut)
-                {
-                    self.error = Some(format!("Não foi possível abrir {}: {error}", shortcut.name));
-                }
-            }
+            Message::Open(index) => self.open(index),
             Message::Reveal(index) => {
                 if let Some(shortcut) = self.shortcuts().get(index)
                     && let Err(error) = shortcuts::reveal(self.ctx.platform.as_ref(), shortcut)
@@ -498,7 +608,10 @@ impl Section for Shortcuts {
                     return self.open_form(form);
                 }
             }
-            Message::CardMenu(index) => self.menu = self.card_menu(index),
+            Message::CardMenu(index) => {
+                self.drag = None;
+                self.menu = self.card_menu(index);
+            }
             Message::AreaMenu => {
                 if self.modal.is_none() {
                     self.menu = Some(self.area_menu());
@@ -552,6 +665,58 @@ impl Section for Shortcuts {
             Message::IconsLoaded(icons) => self.icons.extend(icons),
             Message::ModalClosed => self.modal = None,
             Message::ErrorDismissed => self.error = None,
+            Message::ShortcutPressed(index) => {
+                self.drag = Some(Drag {
+                    item: DragItem::Shortcut(index),
+                    start: hub_ui_kit::cursor::position(),
+                    active: false,
+                });
+            }
+            Message::GroupPressed(group) => {
+                self.drag = Some(Drag {
+                    item: DragItem::Group(group),
+                    start: hub_ui_kit::cursor::position(),
+                    active: false,
+                });
+            }
+            Message::DragMoved(position) => {
+                if let Some(drag) = &mut self.drag
+                    && !drag.active
+                    && drag.start.distance(position) > DRAG_THRESHOLD
+                {
+                    drag.active = true;
+                }
+            }
+            Message::DragReleased => {
+                if let Some(drag) = self.drag.take() {
+                    match (drag.active, drag.item) {
+                        (true, item) => self.drop_drag(item),
+                        (false, DragItem::Shortcut(index)) => {
+                            let available = self
+                                .shortcuts()
+                                .get(index)
+                                .is_some_and(|s| s.target.for_os(self.os()).is_some());
+                            if available {
+                                self.open(index);
+                            }
+                        }
+                        (false, DragItem::Group(group)) => self.toggle_group(&group),
+                    }
+                }
+            }
+            Message::TileHovered(index) => self.hovered_tile = Some(index),
+            Message::TileLeft(index) => {
+                if self.hovered_tile == Some(index) {
+                    self.hovered_tile = None;
+                }
+            }
+            Message::GroupHovered(group) => self.hovered_group = Some(group),
+            Message::GroupLeft(group) => {
+                if self.hovered_group.as_ref() == Some(&group) {
+                    self.hovered_group = None;
+                }
+            }
+            Message::GroupToggled(group) => self.toggle_group(&group),
         }
         Task::none()
     }
@@ -561,16 +726,19 @@ impl Section for Shortcuts {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let keys = event::listen_with(listen);
-        let missing = self.missing_icons();
-        if missing.is_empty() {
-            return keys;
+        let mut subscriptions = vec![event::listen_with(listen)];
+        if self.drag.is_some() {
+            subscriptions.push(event::listen_with(drag_events));
         }
-        let job = IconJob {
-            paths: missing,
-            platform: self.ctx.platform.clone(),
-        };
-        Subscription::batch([keys, Subscription::run_with(job, load_icons)])
+        let missing = self.missing_icons();
+        if !missing.is_empty() {
+            let job = IconJob {
+                paths: missing,
+                platform: self.ctx.platform.clone(),
+            };
+            subscriptions.push(Subscription::run_with(job, load_icons));
+        }
+        Subscription::batch(subscriptions)
     }
 
     fn context_menu(&self) -> Option<ContextMenu<Message>> {

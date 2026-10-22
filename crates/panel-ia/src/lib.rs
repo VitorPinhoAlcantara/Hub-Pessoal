@@ -6,13 +6,14 @@ use std::sync::Arc;
 
 use base64::Engine;
 use hub_core::HubContext;
+use hub_core::platform::clipboard::{self as clipboard, ClipboardContent};
 use hub_ui_kit::iced::task::Handle;
 use hub_ui_kit::iced::widget::text_editor::{self, Motion};
 use hub_ui_kit::iced::widget::{image, markdown};
-use hub_ui_kit::iced::{Element, Subscription, Task, clipboard};
+use hub_ui_kit::iced::{Element, Subscription, Task};
 use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, dialog};
 
-pub use provider::{AiEvent, AiProvider, AiRequest, ClaudeCli, ImageInput};
+pub use provider::{AiEvent, AiProvider, AiRequest, AttachmentInput, ClaudeCli};
 
 pub const PROVIDERS: [(&str, bool); 3] = [
     ("Claude CLI", true),
@@ -21,45 +22,94 @@ pub const PROVIDERS: [(&str, bool); 3] = [
 ];
 
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_TEXT_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone)]
+pub enum AttachmentKind {
+    Image {
+        media_type: String,
+        data: Arc<str>,
+        preview: image::Handle,
+    },
+    Pdf {
+        data: Arc<str>,
+    },
+    Text {
+        content: Arc<str>,
+    },
+}
 
 #[derive(Debug, Clone)]
 pub struct Attachment {
     pub name: String,
-    pub media_type: String,
-    pub data: Arc<str>,
-    pub preview: image::Handle,
+    pub kind: AttachmentKind,
 }
 
 impl Attachment {
     pub fn from_bytes(name: String, bytes: Vec<u8>) -> Result<Self, String> {
-        let media_type = media_type_of(&name)
-            .ok_or_else(|| format!("{name} não é uma imagem suportada (png, jpg, gif ou webp)"))?;
-        if bytes.len() > MAX_IMAGE_BYTES {
-            return Err(format!("{name} passa de 5 MB"));
-        }
-        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        Ok(Self {
-            name,
-            media_type: media_type.to_string(),
-            data: data.into(),
-            preview: image::Handle::from_bytes(bytes),
-        })
+        let base64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let kind = if let Some(media_type) = media_type_of(&name) {
+            if bytes.len() > MAX_IMAGE_BYTES {
+                return Err(format!("{name} passa de 5 MB"));
+            }
+            AttachmentKind::Image {
+                media_type: media_type.to_string(),
+                data: base64(&bytes).into(),
+                preview: image::Handle::from_bytes(bytes),
+            }
+        } else if is_pdf(&name) {
+            if bytes.len() > MAX_PDF_BYTES {
+                return Err(format!("{name} passa de 20 MB"));
+            }
+            AttachmentKind::Pdf {
+                data: base64(&bytes).into(),
+            }
+        } else {
+            let content = String::from_utf8(bytes)
+                .ok()
+                .filter(|content| !content.contains('\0'))
+                .ok_or_else(|| {
+                    format!("{name} não é um tipo suportado (imagem, PDF ou arquivo de texto)")
+                })?;
+            if content.len() > MAX_TEXT_BYTES {
+                return Err(format!("{name} passa de 256 KB de texto"));
+            }
+            AttachmentKind::Text {
+                content: content.into(),
+            }
+        };
+        Ok(Self { name, kind })
     }
 
-    fn input(&self) -> ImageInput {
-        ImageInput {
-            media_type: self.media_type.clone(),
-            data: self.data.to_string(),
+    pub fn preview(&self) -> Option<&image::Handle> {
+        match &self.kind {
+            AttachmentKind::Image { preview, .. } => Some(preview),
+            _ => None,
+        }
+    }
+
+    fn input(&self) -> AttachmentInput {
+        match &self.kind {
+            AttachmentKind::Image {
+                media_type, data, ..
+            } => AttachmentInput::Image {
+                media_type: media_type.clone(),
+                data: data.to_string(),
+            },
+            AttachmentKind::Pdf { data } => AttachmentInput::Pdf {
+                data: data.to_string(),
+            },
+            AttachmentKind::Text { content } => AttachmentInput::Text {
+                name: self.name.clone(),
+                content: content.to_string(),
+            },
         }
     }
 }
 
 pub fn media_type_of(name: &str) -> Option<&'static str> {
-    let extension = Path::new(name)
-        .extension()?
-        .to_string_lossy()
-        .to_lowercase();
-    match extension.as_str() {
+    match extension_of(name).as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),
@@ -68,17 +118,41 @@ pub fn media_type_of(name: &str) -> Option<&'static str> {
     }
 }
 
+fn is_pdf(name: &str) -> bool {
+    extension_of(name) == "pdf"
+}
+
+fn extension_of(name: &str) -> String {
+    Path::new(name)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
 async fn load_attachment(path: PathBuf) -> Result<Attachment, String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    media_type_of(&name)
-        .ok_or_else(|| format!("{name} não é uma imagem suportada (png, jpg, gif ou webp)"))?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|error| format!("falha ao ler {name}: {error}"))?;
+    if metadata.is_dir() {
+        return Err(format!("{name} é uma pasta; anexe arquivos"));
+    }
+    if metadata.len() as usize > MAX_PDF_BYTES {
+        return Err(format!("{name} é grande demais para anexar"));
+    }
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|error| format!("falha ao ler {name}: {error}"))?;
     Attachment::from_bytes(name, bytes)
+}
+
+async fn read_clipboard() -> ClipboardContent {
+    tokio::task::spawn_blocking(clipboard::read)
+        .await
+        .unwrap_or_default()
 }
 
 pub enum Item {
@@ -133,7 +207,9 @@ pub enum Message {
     EditResend(usize),
     ItemMenu(usize),
     MenuClosed,
-    AttachImages,
+    AttachFiles,
+    PasteAttachments,
+    ClipboardRead(ClipboardContent),
     FilesPicked(Vec<PathBuf>),
     FileDropped(PathBuf),
     AttachmentLoaded(Result<Attachment, String>),
@@ -239,14 +315,14 @@ impl Chat {
         self.composer = text_editor::Content::new();
         self.cancelled = None;
         self.copied = None;
-        let images = attachments.iter().map(Attachment::input).collect();
+        let inputs = attachments.iter().map(Attachment::input).collect();
         self.items.push(Item::User {
             text: prompt.clone(),
             attachments,
         });
         let stream = self.provider.send(AiRequest {
             prompt,
-            images,
+            attachments: inputs,
             session: self.session.clone(),
         });
         let (task, handle) = Task::run(stream, Message::Event)
@@ -389,7 +465,7 @@ impl Section for Chat {
                 self.menu = None;
                 if let Some(item) = self.items.get(index) {
                     self.copied = Some(index);
-                    return clipboard::write(item.copy_text());
+                    return hub_ui_kit::iced::clipboard::write(item.copy_text());
                 }
             }
             Message::EditResend(index) => {
@@ -398,8 +474,20 @@ impl Section for Chat {
             }
             Message::ItemMenu(index) => self.menu = self.item_menu(index),
             Message::MenuClosed => self.menu = None,
-            Message::AttachImages => {
-                return Task::perform(dialog::pick_images(), Message::FilesPicked);
+            Message::AttachFiles => {
+                return Task::perform(dialog::pick_files(), Message::FilesPicked);
+            }
+            Message::PasteAttachments => {
+                return Task::perform(read_clipboard(), Message::ClipboardRead);
+            }
+            Message::ClipboardRead(content) => {
+                if let Some(png) = content.png {
+                    return self.update(Message::AttachmentLoaded(Attachment::from_bytes(
+                        "imagem colada.png".to_string(),
+                        png,
+                    )));
+                }
+                return self.update(Message::FilesPicked(content.files));
             }
             Message::FilesPicked(paths) => {
                 return Task::batch(

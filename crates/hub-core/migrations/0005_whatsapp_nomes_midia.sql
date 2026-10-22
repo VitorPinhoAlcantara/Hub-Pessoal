@@ -1,0 +1,8 @@
+CREATE TABLE wa_lids (
+    lid TEXT PRIMARY KEY,
+    pn TEXT NOT NULL
+);
+
+ALTER TABLE wa_conversas ADD COLUMN arquivada INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE wa_mensagens ADD COLUMN midia TEXT NOT NULL DEFAULT '';

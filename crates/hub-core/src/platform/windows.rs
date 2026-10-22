@@ -151,6 +151,60 @@ fn is_uninstaller(name: &str) -> bool {
     lower.contains("uninstall") || lower.contains("desinstalar")
 }
 
+pub(super) fn program_dirs(name: &str) -> Vec<PathBuf> {
+    let name = name.to_lowercase();
+    let env_dir = |key: &str| std::env::var_os(key).map(PathBuf::from);
+    let mut dirs = Vec::new();
+    let matching = |base: PathBuf| {
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|folder| folder.to_lowercase().contains(&name))
+            })
+            .collect::<Vec<_>>()
+    };
+    let local = env_dir("LOCALAPPDATA");
+    let bases = [
+        env_dir("ProgramFiles"),
+        env_dir("ProgramFiles(x86)"),
+        local.as_ref().map(|dir| dir.join("Programs")),
+        local
+            .as_ref()
+            .map(|dir| dir.join("Microsoft").join("WinGet").join("Packages")),
+    ];
+    for base in bases.into_iter().flatten() {
+        for folder in matching(base) {
+            dirs.push(folder.clone());
+            if let Ok(entries) = std::fs::read_dir(&folder) {
+                dirs.extend(
+                    entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| path.is_dir()),
+                );
+            }
+        }
+    }
+    if let Some(local) = &local {
+        dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
+    }
+    if let Some(home) = env_dir("USERPROFILE") {
+        dirs.push(home.join("scoop").join("shims"));
+    }
+    if let Some(data) = env_dir("ProgramData") {
+        dirs.push(data.join("chocolatey").join("bin"));
+    }
+    dirs
+}
+
 fn path_extensions() -> Vec<String> {
     std::env::var("PATHEXT")
         .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())

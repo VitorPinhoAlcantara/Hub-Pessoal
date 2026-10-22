@@ -35,33 +35,46 @@ pub enum AiEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImageInput {
-    pub media_type: String,
-    pub data: String,
+pub enum AttachmentInput {
+    Image { media_type: String, data: String },
+    Pdf { data: String },
+    Text { name: String, content: String },
+}
+
+impl AttachmentInput {
+    fn block(&self) -> Value {
+        match self {
+            AttachmentInput::Image { media_type, data } => serde_json::json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": media_type, "data": data }
+            }),
+            AttachmentInput::Pdf { data } => serde_json::json!({
+                "type": "document",
+                "source": { "type": "base64", "media_type": "application/pdf", "data": data }
+            }),
+            AttachmentInput::Text { name, content } => serde_json::json!({
+                "type": "text",
+                "text": format!("Arquivo anexado: {name}
+
+{content}")
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiRequest {
     pub prompt: String,
-    pub images: Vec<ImageInput>,
+    pub attachments: Vec<AttachmentInput>,
     pub session: Option<String>,
 }
 
 impl AiRequest {
     pub fn user_line(&self) -> String {
         let mut content: Vec<Value> = self
-            .images
+            .attachments
             .iter()
-            .map(|image| {
-                serde_json::json!({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": image.media_type,
-                        "data": image.data,
-                    }
-                })
-            })
+            .map(AttachmentInput::block)
             .collect();
         if !self.prompt.is_empty() {
             content.push(serde_json::json!({ "type": "text", "text": self.prompt }));
@@ -362,13 +375,22 @@ mod tests {
     }
 
     #[test]
-    fn user_line_carries_images_before_text() {
+    fn user_line_carries_attachments_before_text() {
         let request = AiRequest {
             prompt: "o que é isso?".into(),
-            images: vec![ImageInput {
-                media_type: "image/png".into(),
-                data: "AAAA".into(),
-            }],
+            attachments: vec![
+                AttachmentInput::Image {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+                AttachmentInput::Pdf {
+                    data: "BBBB".into(),
+                },
+                AttachmentInput::Text {
+                    name: "notas.txt".into(),
+                    content: "linha".into(),
+                },
+            ],
             session: None,
         };
         let line = request.user_line();
@@ -377,7 +399,15 @@ mod tests {
         assert_eq!(value["type"], "user");
         let content = value["message"]["content"].as_array().unwrap();
         assert_eq!(content[0]["source"]["media_type"], "image/png");
-        assert_eq!(content[1]["text"], "o que é isso?");
+        assert_eq!(content[1]["type"], "document");
+        assert_eq!(content[1]["source"]["media_type"], "application/pdf");
+        assert_eq!(
+            content[2]["text"],
+            "Arquivo anexado: notas.txt
+
+linha"
+        );
+        assert_eq!(content[3]["text"], "o que é isso?");
     }
 
     #[test]

@@ -15,7 +15,7 @@ use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, style};
 use iced::keyboard::{self, Modifiers};
 use iced::window::{self, Direction};
 use iced::{Element, Size, Subscription, Task, Theme};
-use iced::{Event, Point, event, mouse};
+use iced::{Event, Point, Vector, event, mouse};
 use section_agenda::Agenda;
 use section_atalhos::Shortcuts;
 use section_scripts::Scripts;
@@ -42,7 +42,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const SECTIONS: [Tab; 4] = [Tab::Agenda, Tab::Scripts, Tab::Shortcuts, Tab::WhatsApp];
+    pub const SECTIONS: [Tab; 4] = [Tab::Agenda, Tab::Shortcuts, Tab::WhatsApp, Tab::Scripts];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -76,6 +76,9 @@ pub enum Message {
     ChatResizeStart,
     ChatResizeMove(Point),
     ChatResizeEnd,
+    PlayerDragStart,
+    PlayerDragMove(Point),
+    PlayerDragEnd,
     DragWindow,
     ResizeWindow(Direction),
     Minimize,
@@ -112,6 +115,8 @@ pub struct App {
     pub zoom: f32,
     pub chat_width: f32,
     pub resizing_chat: bool,
+    pub player_offset: Vector,
+    pub player_drag: Option<(Point, Vector)>,
     pub toolbar_menu: Option<ContextMenu<Message>>,
 }
 
@@ -197,6 +202,8 @@ impl App {
             zoom: appearance.clamped_zoom(),
             chat_width: appearance.clamped_chat_width(),
             resizing_chat: false,
+            player_offset: Vector::ZERO,
+            player_drag: None,
             toolbar_menu: None,
         };
         let task = if options.start_hidden && app.tray_available {
@@ -509,6 +516,21 @@ impl App {
                 self.resizing_chat = false;
                 self.save_appearance();
             }
+            Message::PlayerDragStart => {
+                self.player_drag = Some((hub_ui_kit::cursor::position(), self.player_offset));
+            }
+            Message::PlayerDragMove(position) => {
+                if let Some((start, base)) = self.player_drag {
+                    let viewport = hub_ui_kit::cursor::viewport();
+                    self.player_offset = Vector::new(
+                        (base.x + start.x - position.x)
+                            .clamp(0.0, (viewport.width - 240.0).max(0.0)),
+                        (base.y + start.y - position.y)
+                            .clamp(0.0, (viewport.height - 160.0).max(0.0)),
+                    );
+                }
+            }
+            Message::PlayerDragEnd => self.player_drag = None,
             Message::ConfirmAnswered(id, approved) => {
                 self.ctx.confirmations.answer(id, approved);
                 self.confirmations.retain(|c| c.id != id);
@@ -660,6 +682,9 @@ impl App {
             if self.resizing_chat {
                 subscriptions.push(event::listen_with(resize_events));
             }
+            if self.player_drag.is_some() {
+                subscriptions.push(event::listen_with(player_drag_events));
+            }
             if self.ai_open {
                 subscriptions.push(event::listen_with(file_drops));
             }
@@ -719,6 +744,21 @@ fn resize_events(event: Event, _status: event::Status, _window: window::Id) -> O
         }
         Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
         | Event::Mouse(mouse::Event::CursorLeft) => Some(Message::ChatResizeEnd),
+        _ => None,
+    }
+}
+
+fn player_drag_events(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::PlayerDragMove(position))
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        | Event::Mouse(mouse::Event::CursorLeft) => Some(Message::PlayerDragEnd),
         _ => None,
     }
 }

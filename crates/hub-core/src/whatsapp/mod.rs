@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::platform::CommandSpec;
 pub use bridge::BridgeHandle;
-pub use protocol::{WireConversation, WireMessage};
+pub use protocol::{WireChatInfo, WireConversation, WireMessage};
 
 pub const SIDECAR_NAME: &str = "whatsapp-bridge";
 pub const MESSAGES_LIMIT: usize = 200;
@@ -61,9 +61,22 @@ pub struct Message {
     pub mine: bool,
     pub at: NaiveDateTime,
     pub kind: MessageKind,
+    pub media: String,
 }
 
 impl Message {
+    pub fn sender_label(&self) -> String {
+        let name = self.sender_name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+        phone_label(&self.sender).unwrap_or_else(|| "Participante".to_string())
+    }
+
+    pub fn has_media(&self) -> bool {
+        self.kind == MessageKind::Image && !self.media.is_empty()
+    }
+
     pub fn display_text(&self) -> String {
         match (self.kind.placeholder(), self.text.trim().is_empty()) {
             (Some(placeholder), true) => placeholder.to_string(),
@@ -79,17 +92,23 @@ pub struct Conversation {
     pub name: String,
     pub alias: Option<String>,
     pub group: bool,
+    pub archived: bool,
     pub last_at: Option<NaiveDateTime>,
     pub preview: Option<String>,
 }
 
 impl Conversation {
-    pub fn title(&self) -> &str {
-        match &self.alias {
-            Some(alias) => alias,
-            None if !self.name.trim().is_empty() => &self.name,
-            None => self.jid.split('@').next().unwrap_or(&self.jid),
+    pub fn title(&self) -> String {
+        if let Some(alias) = &self.alias {
+            return alias.clone();
         }
+        if !self.name.trim().is_empty() {
+            return self.name.clone();
+        }
+        if self.group {
+            return "Grupo sem nome".to_string();
+        }
+        phone_label(&self.jid).unwrap_or_else(|| "Contato sem nome".to_string())
     }
 
     pub fn matches(&self, query: &str) -> bool {
@@ -99,6 +118,22 @@ impl Conversation {
             || self.name.to_lowercase().contains(&query)
             || self.jid.contains(&query)
     }
+}
+
+pub fn phone_label(jid: &str) -> Option<String> {
+    let number = jid.strip_suffix("@s.whatsapp.net")?;
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let formatted = match (number.strip_prefix("55"), number.len()) {
+        (Some(rest), 12 | 13) => {
+            let (area, local) = rest.split_at(2);
+            let (head, tail) = local.split_at(local.len() - 4);
+            format!("+55 {area} {head}-{tail}")
+        }
+        _ => format!("+{number}"),
+    };
+    Some(formatted)
 }
 
 pub fn from_unix(seconds: i64) -> NaiveDateTime {
@@ -117,6 +152,7 @@ pub fn wire_to_message(wire: &WireMessage) -> Message {
         mine: wire.minha,
         at: from_unix(wire.em),
         kind: MessageKind::parse(&wire.tipo),
+        media: wire.midia.clone(),
     }
 }
 
@@ -152,8 +188,12 @@ pub fn upsert_conversation(
 
 pub fn store_message(conn: &Connection, message: &Message) -> rusqlite::Result<bool> {
     let inserted = conn.execute(
-        "INSERT OR IGNORE INTO wa_mensagens (id, jid, de, nome_de, texto, minha, em, tipo)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO wa_mensagens (id, jid, de, nome_de, texto, minha, em, tipo, midia)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(jid, id) DO UPDATE SET
+            midia = CASE WHEN excluded.midia <> '' THEN excluded.midia ELSE wa_mensagens.midia END,
+            nome_de = CASE WHEN excluded.nome_de <> '' THEN excluded.nome_de ELSE wa_mensagens.nome_de END
+         WHERE excluded.midia <> wa_mensagens.midia OR excluded.nome_de <> wa_mensagens.nome_de",
         params![
             message.id,
             message.jid,
@@ -162,7 +202,8 @@ pub fn store_message(conn: &Connection, message: &Message) -> rusqlite::Result<b
             message.text,
             message.mine,
             message.at,
-            kind_text(message.kind)
+            kind_text(message.kind),
+            message.media
         ],
     )? > 0;
     let fallback_name = if message.mine || message.jid.ends_with("@g.us") {
@@ -186,6 +227,14 @@ pub fn store_message(conn: &Connection, message: &Message) -> rusqlite::Result<b
     Ok(inserted)
 }
 
+pub fn store_messages(conn: &Connection, messages: &[Message]) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for message in messages {
+        store_message(&tx, message)?;
+    }
+    tx.commit()
+}
+
 fn message_from_row(row: &Row<'_>) -> rusqlite::Result<Message> {
     let kind: String = row.get(7)?;
     Ok(Message {
@@ -197,14 +246,22 @@ fn message_from_row(row: &Row<'_>) -> rusqlite::Result<Message> {
         mine: row.get(5)?,
         at: row.get(6)?,
         kind: MessageKind::parse(&kind),
+        media: row.get(8)?,
     })
 }
 
 pub fn messages(conn: &Connection, jid: &str, limit: usize) -> rusqlite::Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT id, jid, de, nome_de, texto, minha, em, tipo FROM (
+        "SELECT m.id, m.jid, COALESCE(l.pn, m.de),
+            COALESCE(a.apelido, NULLIF(c.nome, ''), m.nome_de),
+            m.texto, m.minha, m.em, m.tipo, m.midia
+         FROM (
             SELECT rowid AS ordem, * FROM wa_mensagens WHERE jid = ?1 ORDER BY em DESC, rowid DESC LIMIT ?2
-         ) ORDER BY em, ordem",
+         ) m
+         LEFT JOIN wa_lids l ON l.lid = m.de
+         LEFT JOIN wa_apelidos a ON a.jid = COALESCE(l.pn, m.de)
+         LEFT JOIN wa_conversas c ON c.jid = COALESCE(l.pn, m.de) AND c.grupo = 0
+         ORDER BY m.em, m.ordem",
     )?;
     stmt.query_map(params![jid, limit as i64], message_from_row)?
         .collect()
@@ -212,7 +269,7 @@ pub fn messages(conn: &Connection, jid: &str, limit: usize) -> rusqlite::Result<
 
 pub fn conversations(conn: &Connection) -> rusqlite::Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
-        "SELECT c.jid, c.nome, a.apelido, c.grupo, c.ultima_em,
+        "SELECT c.jid, c.nome, a.apelido, c.grupo, c.arquivada, c.ultima_em,
             (SELECT CASE WHEN m.texto <> '' THEN m.texto ELSE '[' || m.tipo || ']' END
              FROM wa_mensagens m WHERE m.jid = c.jid ORDER BY m.em DESC LIMIT 1)
          FROM wa_conversas c LEFT JOIN wa_apelidos a ON a.jid = c.jid
@@ -224,11 +281,92 @@ pub fn conversations(conn: &Connection) -> rusqlite::Result<Vec<Conversation>> {
             name: row.get(1)?,
             alias: row.get(2)?,
             group: row.get(3)?,
-            last_at: row.get(4)?,
-            preview: row.get(5)?,
+            archived: row.get(4)?,
+            last_at: row.get(5)?,
+            preview: row.get(6)?,
         })
     })?
     .collect()
+}
+
+pub fn known_jids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT jid FROM wa_conversas WHERE ultima_em IS NOT NULL OR jid LIKE '%@lid'
+         UNION
+         SELECT DISTINCT de FROM wa_mensagens WHERE de LIKE '%@lid'",
+    )?;
+    stmt.query_map([], |row| row.get(0))?.collect()
+}
+
+pub fn set_archived(conn: &Connection, jid: &str, archived: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE wa_conversas SET arquivada = ?2
+         WHERE jid = ?1 OR jid IN (SELECT lid FROM wa_lids WHERE pn = ?1)",
+        params![jid, archived],
+    )?;
+    Ok(())
+}
+
+pub fn apply_chat_info(conn: &Connection, infos: &[WireChatInfo]) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for info in infos {
+        let phone = info.phone.trim();
+        let target = if phone.is_empty() || phone == info.jid {
+            info.jid.as_str()
+        } else {
+            tx.execute(
+                "INSERT INTO wa_lids (lid, pn) VALUES (?1, ?2)
+                 ON CONFLICT(lid) DO UPDATE SET pn = excluded.pn",
+                params![info.jid, phone],
+            )?;
+            merge_conversation(&tx, &info.jid, phone)?;
+            phone
+        };
+        if !info.nome.trim().is_empty() && !target.ends_with("@g.us") {
+            tx.execute(
+                "INSERT INTO wa_conversas (jid, nome, grupo) VALUES (?1, ?2, 0)
+                 ON CONFLICT(jid) DO UPDATE SET nome = excluded.nome WHERE wa_conversas.grupo = 0",
+                params![target, info.nome.trim()],
+            )?;
+        }
+        tx.execute(
+            "UPDATE wa_conversas SET arquivada = ?2 WHERE jid = ?1",
+            params![target, info.arquivada],
+        )?;
+    }
+    tx.commit()
+}
+
+fn merge_conversation(conn: &Connection, lid: &str, pn: &str) -> rusqlite::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM wa_conversas WHERE jid = ?1)",
+        [lid],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO wa_conversas (jid, nome, grupo, ultima_em, arquivada)
+         SELECT ?2, nome, 0, ultima_em, arquivada FROM wa_conversas WHERE jid = ?1
+         ON CONFLICT(jid) DO UPDATE SET
+            ultima_em = CASE WHEN wa_conversas.ultima_em IS NULL OR excluded.ultima_em > wa_conversas.ultima_em
+                THEN excluded.ultima_em ELSE wa_conversas.ultima_em END,
+            nome = CASE WHEN wa_conversas.nome = '' THEN excluded.nome ELSE wa_conversas.nome END",
+        params![lid, pn],
+    )?;
+    conn.execute(
+        "UPDATE OR IGNORE wa_mensagens SET jid = ?2 WHERE jid = ?1",
+        params![lid, pn],
+    )?;
+    conn.execute("DELETE FROM wa_mensagens WHERE jid = ?1", [lid])?;
+    conn.execute(
+        "INSERT OR IGNORE INTO wa_apelidos (jid, apelido) SELECT ?2, apelido FROM wa_apelidos WHERE jid = ?1",
+        params![lid, pn],
+    )?;
+    conn.execute("DELETE FROM wa_apelidos WHERE jid = ?1", [lid])?;
+    conn.execute("DELETE FROM wa_conversas WHERE jid = ?1", [lid])?;
+    Ok(())
 }
 
 pub fn set_alias(conn: &Connection, jid: &str, alias: &str) -> rusqlite::Result<()> {

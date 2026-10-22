@@ -261,7 +261,7 @@ func TestBuildConversations(t *testing.T) {
 	}
 	got := buildConversations(contacts, groups)
 	want := []Conversation{
-		{JID: "5511000000003@s.whatsapp.net", Name: "5511000000003", Group: false},
+		{JID: "5511000000003@s.whatsapp.net", Name: "", Group: false},
 		{JID: "5511000000002@s.whatsapp.net", Name: "Ana", Group: false},
 		{JID: "5511000000001@s.whatsapp.net", Name: "Bruno Silva", Group: false},
 		{JID: "120363000@g.us", Name: "Família", Group: true},
@@ -281,15 +281,14 @@ func TestBuildConversations(t *testing.T) {
 }
 
 func TestContactNameFallbacks(t *testing.T) {
-	jid := types.NewJID("5511777", types.DefaultUserServer)
-	if got := contactName(jid, types.ContactInfo{FirstName: "Zé"}); got != "Zé" {
+	if got := contactName(types.ContactInfo{FirstName: "Zé"}); got != "Zé" {
 		t.Errorf("esperava Zé, veio %s", got)
 	}
-	if got := contactName(jid, types.ContactInfo{BusinessName: "Loja"}); got != "Loja" {
+	if got := contactName(types.ContactInfo{BusinessName: "Loja"}); got != "Loja" {
 		t.Errorf("esperava Loja, veio %s", got)
 	}
-	if got := contactName(jid, types.ContactInfo{PushName: "  "}); got != "5511777" {
-		t.Errorf("esperava o número, veio %s", got)
+	if got := contactName(types.ContactInfo{PushName: "  "}); got != "" {
+		t.Errorf("esperava vazio, veio %s", got)
 	}
 }
 
@@ -297,5 +296,50 @@ func TestSessionDSN(t *testing.T) {
 	dsn := sessionDSN("dados")
 	if !strings.Contains(dsn, sessionFileName) || !strings.Contains(dsn, "_pragma=foreign_keys(1)") {
 		t.Fatalf("dsn inesperado: %s", dsn)
+	}
+}
+
+func TestImageMediaRoundTrip(t *testing.T) {
+	img := &waE2E.ImageMessage{
+		DirectPath:    proto.String("/v/t62/abc"),
+		Mimetype:      proto.String("image/png"),
+		JPEGThumbnail: []byte{1, 2, 3},
+		MediaKey:      []byte{9},
+	}
+	encoded := encodeImage(img)
+	if encoded == "" {
+		t.Fatal("esperava mídia codificada")
+	}
+	decoded, err := decodeImage(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GetDirectPath() != "/v/t62/abc" || len(decoded.GetJPEGThumbnail()) != 0 {
+		t.Fatalf("mídia inesperada: %v", decoded)
+	}
+	if len(img.GetJPEGThumbnail()) != 3 {
+		t.Fatal("a mensagem original não pode ser alterada")
+	}
+	if encodeImage(&waE2E.ImageMessage{}) != "" {
+		t.Fatal("imagem sem caminho não deve ser codificada")
+	}
+	if _, err := decodeImage("%%%"); err == nil {
+		t.Fatal("esperava erro")
+	}
+}
+
+func TestMediaFileName(t *testing.T) {
+	if got := mediaFileName("3EB0/../x", "image/png"); got != "3EB0x.png" {
+		t.Fatalf("nome inesperado: %s", got)
+	}
+	if got := mediaFileName("", "image/jpeg; codecs"); got != "imagem.jpg" {
+		t.Fatalf("nome inesperado: %s", got)
+	}
+}
+
+func TestArchivedEventKeepsFalse(t *testing.T) {
+	encoded, _ := json.Marshal(archivedEvent("1@s.whatsapp.net", false))
+	if string(encoded) != `{"evento":"arquivada","jid":"1@s.whatsapp.net","arquivada":false}` {
+		t.Fatalf("formato inesperado: %s", encoded)
 	}
 }

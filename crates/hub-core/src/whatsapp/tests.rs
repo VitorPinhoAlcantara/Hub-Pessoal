@@ -16,6 +16,7 @@ fn wire(id: &str, jid: &str, text: &str, mine: bool, at: i64, kind: &str) -> Wir
         em: at,
         tipo: kind.into(),
         historico: false,
+        midia: String::new(),
     }
 }
 
@@ -257,4 +258,117 @@ fn link_holds_current_handle() {
     assert!(link.get().is_none());
     link.set(None);
     assert!(link.get().is_none());
+}
+
+#[test]
+fn phone_labels_and_titles_hide_identifiers() {
+    assert_eq!(
+        phone_label("5579999998888@s.whatsapp.net").as_deref(),
+        Some("+55 79 99999-8888")
+    );
+    assert_eq!(
+        phone_label("447700900123@s.whatsapp.net").as_deref(),
+        Some("+447700900123")
+    );
+    assert!(phone_label("140419778236595@lid").is_none());
+    let mut conversation = Conversation {
+        jid: "140419778236595@lid".into(),
+        name: String::new(),
+        alias: None,
+        group: false,
+        archived: false,
+        last_at: None,
+        preview: None,
+    };
+    assert_eq!(conversation.title(), "Contato sem nome");
+    conversation.group = true;
+    assert_eq!(conversation.title(), "Grupo sem nome");
+    conversation.alias = Some("Chefe".into());
+    assert_eq!(conversation.title(), "Chefe");
+}
+
+#[test]
+fn chat_info_merges_lid_conversations_and_names_group_senders() {
+    let db = Database::open_in_memory().unwrap();
+    let c = db.conn();
+    let lid = "269832025059549@lid";
+    let phone = "5579999998888@s.whatsapp.net";
+    let group = "123@g.us";
+    store_message(
+        c,
+        &wire_to_message(&wire("1", lid, "oi", false, 1_792_627_000, "texto")),
+    )
+    .unwrap();
+    set_alias(c, lid, "Gabi").unwrap();
+    let mut from_group = wire(
+        "2",
+        group,
+        "tem 4 sem responsável",
+        false,
+        1_792_627_100,
+        "texto",
+    );
+    from_group.de = "140419778236595@lid".into();
+    from_group.nome_de = "Gabriel".into();
+    store_message(c, &wire_to_message(&from_group)).unwrap();
+    let mut known = known_jids(c).unwrap();
+    known.sort();
+    assert_eq!(known, ["123@g.us", "140419778236595@lid", lid]);
+    apply_chat_info(
+        c,
+        &[
+            WireChatInfo {
+                jid: lid.into(),
+                phone: phone.into(),
+                nome: "Gabriela Souza".into(),
+                arquivada: false,
+            },
+            WireChatInfo {
+                jid: "140419778236595@lid".into(),
+                phone: "5579988887777@s.whatsapp.net".into(),
+                nome: "Gabriel Jesus".into(),
+                arquivada: false,
+            },
+            WireChatInfo {
+                jid: group.into(),
+                phone: String::new(),
+                nome: String::new(),
+                arquivada: true,
+            },
+        ],
+    )
+    .unwrap();
+    let list = conversations(c).unwrap();
+    assert!(list.iter().all(|conv| conv.jid != lid));
+    let merged = list.iter().find(|conv| conv.jid == phone).unwrap();
+    assert_eq!(merged.name, "Gabriela Souza");
+    assert_eq!(merged.title(), "Gabi");
+    assert_eq!(messages(c, phone, 10).unwrap().len(), 1);
+    assert!(list.iter().find(|conv| conv.jid == group).unwrap().archived);
+    let group_messages = messages(c, group, 10).unwrap();
+    assert_eq!(group_messages[0].sender, "5579988887777@s.whatsapp.net");
+    assert_eq!(group_messages[0].sender_label(), "Gabriel Jesus");
+    set_alias(c, "5579988887777@s.whatsapp.net", "Gabi do grupo").unwrap();
+    assert_eq!(
+        messages(c, group, 10).unwrap()[0].sender_label(),
+        "Gabi do grupo"
+    );
+    set_archived(c, group, false).unwrap();
+    assert!(!conversations(c).unwrap().iter().any(|conv| conv.archived));
+}
+
+#[test]
+fn image_media_is_kept_and_filled_later() {
+    let db = Database::open_in_memory().unwrap();
+    let c = db.conn();
+    let jid = "5511@s.whatsapp.net";
+    let mut image = wire("I1", jid, "foto", false, 1_792_627_000, "imagem");
+    store_message(c, &wire_to_message(&image)).unwrap();
+    assert!(!messages(c, jid, 10).unwrap()[0].has_media());
+    image.midia = "Zm9v".into();
+    assert!(store_message(c, &wire_to_message(&image)).unwrap());
+    let stored = &messages(c, jid, 10).unwrap()[0];
+    assert!(stored.has_media());
+    assert_eq!(stored.media, "Zm9v");
+    assert!(!store_message(c, &wire_to_message(&image)).unwrap());
 }

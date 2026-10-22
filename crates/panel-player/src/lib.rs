@@ -188,14 +188,15 @@ impl Player {
             return Ok(());
         }
         let tools = self.tools.clone().unwrap_or_else(mpv::check_tools);
-        if tools.mpv.is_none() {
+        let Some(program) = tools.mpv.as_ref().and(tools.mpv_path.clone()) else {
             self.tools = Some(tools);
             return Err("O mpv não está instalado.".to_string());
-        }
+        };
+        let ytdlp = tools.ytdlp_path.clone();
         self.tools = Some(tools);
         self.session += 1;
         let path = ipc::ipc_path(&format!("hub-mpv-{}-{}", std::process::id(), self.session));
-        let process = MpvProcess::spawn("mpv", &path, self.status.volume)
+        let process = MpvProcess::spawn(&program, ytdlp.as_deref(), &path, self.status.volume)
             .map_err(|e| format!("Não foi possível iniciar o mpv: {e}"))?;
         self.process = Some(process);
         self.ipc_path = Some(path);

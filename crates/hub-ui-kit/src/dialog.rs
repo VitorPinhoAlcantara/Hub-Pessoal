@@ -2,12 +2,9 @@ use std::path::PathBuf;
 
 use rfd::AsyncFileDialog;
 
-pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
-
-pub async fn pick_images() -> Vec<PathBuf> {
+pub async fn pick_files() -> Vec<PathBuf> {
     AsyncFileDialog::new()
-        .set_title("Escolher imagens")
-        .add_filter("Imagens", IMAGE_EXTENSIONS)
+        .set_title("Escolher arquivos")
         .pick_files()
         .await
         .unwrap_or_default()

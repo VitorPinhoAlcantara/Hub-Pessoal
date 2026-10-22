@@ -277,9 +277,12 @@ fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element
     let content = container(
         row![
             leading,
-            column![body(card.title.as_str()).color(title_color), meta]
-                .spacing(units(1))
-                .width(Length::Fill),
+            column![
+                body(card.title.as_str()).color(title_color),
+                meta.wrap().vertical_spacing(units(1))
+            ]
+            .spacing(units(1))
+            .width(Length::Fill),
         ]
         .spacing(units(2))
         .align_y(Alignment::Start),

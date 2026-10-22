@@ -7,6 +7,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_notas_lembretes.sql"),
     include_str!("../migrations/0003_player_favoritos.sql"),
     include_str!("../migrations/0004_whatsapp.sql"),
+    include_str!("../migrations/0005_whatsapp_nomes_midia.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]

@@ -190,6 +190,9 @@ async fn lists_all_tools() {
         "whatsapp_conversas",
         "whatsapp_apelido",
         "terminal_executar",
+        "atalhos_mover",
+        "atalhos_grupo_mover",
+        "atalhos_grupo_recolher",
     ] {
         assert!(names.contains(&expected.to_string()), "faltou {expected}");
     }
@@ -410,6 +413,7 @@ async fn whatsapp_read_uses_stored_messages_and_send_needs_open_tab() {
             em: 1_792_627_000,
             tipo: "texto".into(),
             historico: false,
+            midia: String::new(),
         };
         hub_core::whatsapp::store_message(db.conn(), &hub_core::whatsapp::wire_to_message(&wire))
             .unwrap();
@@ -937,6 +941,7 @@ async fn whatsapp_conversations_are_listed_and_aliased() {
                 em: 1_792_627_000,
                 tipo: "texto".into(),
                 historico: false,
+                midia: String::new(),
             };
             hub_core::whatsapp::store_message(
                 db.conn(),
@@ -977,6 +982,106 @@ async fn whatsapp_conversations_are_listed_and_aliased() {
     )
     .await;
     assert!(is_error(&missing));
+    hub_core::whatsapp::set_archived(fixture.ctx.db().conn(), "beto@s.whatsapp.net", true).unwrap();
+    let archived =
+        json_of(&call(&client, "whatsapp_conversas", json!({ "arquivadas": true })).await);
+    assert_eq!(archived.as_array().unwrap().len(), 1);
+    assert_eq!(archived[0]["jid"], "beto@s.whatsapp.net");
+    assert_eq!(archived[0]["arquivada"], true);
+    let active = json_of(
+        &call(
+            &client,
+            "whatsapp_conversas",
+            json!({ "arquivadas": false }),
+        )
+        .await,
+    );
+    assert_eq!(active.as_array().unwrap().len(), 1);
+    assert_eq!(active[0]["jid"], "ana@s.whatsapp.net");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shortcuts_and_groups_can_be_reordered_and_collapsed() {
+    let fixture = fixture();
+    let mut events = fixture.ctx.events.subscribe();
+    let client = client(&fixture.server, &fixture.server.token).await;
+    for (name, group) in [("A", "G1"), ("B", "G1"), ("X", "G2")] {
+        let added = call(
+            &client,
+            "atalhos_adicionar",
+            json!({ "nome": name, "tipo": "url", "alvo": "exemplo.com", "grupo": group }),
+        )
+        .await;
+        assert!(!is_error(&added), "{}", result_text(&added));
+    }
+    let names = |listed: &Value| -> Vec<String> {
+        listed["atalhos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                format!(
+                    "{}:{}",
+                    a["grupo"].as_str().unwrap(),
+                    a["nome"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    let moved = call(
+        &client,
+        "atalhos_mover",
+        json!({ "indice": 0, "para_indice": 1 }),
+    )
+    .await;
+    assert!(!is_error(&moved), "{}", result_text(&moved));
+    let listed = json_of(&call(&client, "atalhos_listar", json!({})).await);
+    assert_eq!(names(&listed), ["G1:B", "G1:A", "G2:X"]);
+    let to_group = call(
+        &client,
+        "atalhos_mover",
+        json!({ "indice": 0, "grupo": "G2" }),
+    )
+    .await;
+    assert!(!is_error(&to_group), "{}", result_text(&to_group));
+    let grouped = call(
+        &client,
+        "atalhos_grupo_mover",
+        json!({ "grupo": "G2", "para_grupo": "G1" }),
+    )
+    .await;
+    assert!(!is_error(&grouped), "{}", result_text(&grouped));
+    let collapsed = call(
+        &client,
+        "atalhos_grupo_recolher",
+        json!({ "grupo": "G1", "recolhido": true }),
+    )
+    .await;
+    assert!(!is_error(&collapsed), "{}", result_text(&collapsed));
+    let listed = json_of(&call(&client, "atalhos_listar", json!({})).await);
+    assert_eq!(names(&listed), ["G2:X", "G2:B", "G1:A"]);
+    assert_eq!(listed["grupos"], json!(["G2", "G1"]));
+    assert_eq!(listed["recolhidos"], json!(["G1"]));
+    for (tool, args) in [
+        ("atalhos_mover", json!({ "indice": 0 })),
+        ("atalhos_mover", json!({ "indice": 0, "para_indice": 9 })),
+        ("atalhos_mover", json!({ "indice": 9, "grupo": "G1" })),
+        (
+            "atalhos_grupo_mover",
+            json!({ "grupo": "G9", "para_grupo": "G1" }),
+        ),
+        (
+            "atalhos_grupo_recolher",
+            json!({ "grupo": "G9", "recolhido": true }),
+        ),
+    ] {
+        assert!(
+            is_error(&call(&client, tool, args).await),
+            "{tool} deveria falhar"
+        );
+    }
+    assert_eq!(events.recv().await.unwrap(), HubEvent::ShortcutsChanged);
     client.cancel().await.unwrap();
 }
 

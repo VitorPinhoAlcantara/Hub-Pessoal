@@ -205,6 +205,23 @@ pub fn outlined(color: Color, faded: bool) -> impl Fn(&Theme) -> container::Styl
     }
 }
 
+pub fn drop_zone(highlight: bool, faded: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: highlight.then_some(Background::Color(alpha(ACCENT, 0.08))),
+        text_color: Some(if faded { TEXT_SECONDARY } else { TEXT_PRIMARY }),
+        border: border(
+            if highlight {
+                ACCENT
+            } else {
+                Color::TRANSPARENT
+            },
+            1.0,
+            RADIUS_PANEL,
+        ),
+        ..container::Style::default()
+    }
+}
+
 pub fn day_column(highlight: bool, faded: bool) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(Background::Color(if faded {

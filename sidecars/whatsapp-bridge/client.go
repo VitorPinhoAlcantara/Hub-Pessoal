@@ -57,6 +57,7 @@ func (l *stderrLogger) Sub(module string) waLog.Logger {
 
 type bridge struct {
 	ctx       context.Context
+	dataDir   string
 	container *sqlstore.Container
 	out       *output
 	log       waLog.Logger
@@ -82,7 +83,7 @@ func newBridge(ctx context.Context, dataDir string, out *output) (*bridge, error
 	if err != nil {
 		return nil, fmt.Errorf("não foi possível ler a sessão do WhatsApp: %w", err)
 	}
-	b := &bridge{ctx: ctx, container: container, out: out, log: logger}
+	b := &bridge{ctx: ctx, dataDir: dataDir, container: container, out: out, log: logger}
 	b.client.Store(b.newClient(device))
 	return b, nil
 }
@@ -118,6 +119,20 @@ func (b *bridge) handle(cmd Command) {
 		b.out.write(okResponse(cmd.ID, conversations))
 	case CmdListMessages:
 		b.out.write(okResponse(cmd.ID, []Message{}))
+	case CmdChatInfo:
+		infos, err := b.chatInfo(cmd.JIDs)
+		if err != nil {
+			b.out.write(errorResponse(cmd.ID, "Não foi possível consultar as conversas: "+err.Error()))
+			return
+		}
+		b.out.write(okResponse(cmd.ID, infos))
+	case CmdDownloadMedia:
+		path, err := b.downloadImage(cmd.MessageID, cmd.Media)
+		if err != nil {
+			b.out.write(errorResponse(cmd.ID, "Não foi possível baixar a imagem: "+err.Error()))
+			return
+		}
+		b.out.write(okResponse(cmd.ID, DownloadResult{Path: path}))
 	case CmdSend:
 		msg, err := b.send(cmd.JID, cmd.Text)
 		if err != nil {
@@ -196,6 +211,124 @@ func (b *bridge) listConversations() ([]Conversation, error) {
 	return buildConversations(contacts, groups), nil
 }
 
+func (b *bridge) resolve(ctx context.Context, client *whatsmeow.Client, jid types.JID) types.JID {
+	jid = jid.ToNonAD()
+	if jid.Server != types.HiddenUserServer {
+		return jid
+	}
+	pn, err := client.Store.LIDs.GetPNForLID(ctx, jid)
+	if err != nil || pn.IsEmpty() {
+		return jid
+	}
+	return pn.ToNonAD()
+}
+
+func (b *bridge) savedName(ctx context.Context, client *whatsmeow.Client, jid types.JID) string {
+	if jid.Server != types.DefaultUserServer {
+		return ""
+	}
+	info, err := client.Store.Contacts.GetContact(ctx, jid)
+	if err != nil || !info.Found {
+		return ""
+	}
+	return savedName(info)
+}
+
+func (b *bridge) archived(ctx context.Context, client *whatsmeow.Client, jids ...types.JID) bool {
+	for _, jid := range jids {
+		settings, err := client.Store.ChatSettings.GetChatSettings(ctx, jid)
+		if err == nil && settings.Found && settings.Archived {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *bridge) chatInfo(jids []string) ([]ChatInfo, error) {
+	client := b.current()
+	if !client.IsLoggedIn() {
+		return nil, errNotConnected
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 60*time.Second)
+	defer cancel()
+	result := make([]ChatInfo, 0, len(jids))
+	for _, raw := range jids {
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			continue
+		}
+		jid = jid.ToNonAD()
+		resolved := b.resolve(ctx, client, jid)
+		info := ChatInfo{JID: raw, Name: b.savedName(ctx, client, resolved)}
+		if resolved != jid {
+			info.Phone = resolved.String()
+		}
+		info.Archived = b.archived(ctx, client, jid, resolved)
+		result = append(result, info)
+	}
+	return result, nil
+}
+
+func (b *bridge) downloadImage(id, media string) (string, error) {
+	img, err := decodeImage(media)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(b.dataDir, "midia")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, mediaFileName(id, img.GetMimetype()))
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path, nil
+	}
+	client := b.current()
+	if !client.IsLoggedIn() {
+		return "", errNotConnected
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 2*time.Minute)
+	defer cancel()
+	data, err := client.Download(ctx, img)
+	if err != nil {
+		if errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) {
+			return "", errors.New("a imagem não está mais disponível no servidor do WhatsApp")
+		}
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (b *bridge) enrich(client *whatsmeow.Client, evt *events.Message, msg *Message) {
+	ctx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
+	defer cancel()
+	info := evt.Info
+	chat := b.resolve(ctx, client, info.Chat)
+	if chat.Server == types.HiddenUserServer && !info.IsGroup {
+		alt := info.SenderAlt
+		if info.IsFromMe {
+			alt = info.RecipientAlt
+		}
+		if alt.Server == types.DefaultUserServer {
+			chat = alt.ToNonAD()
+		}
+	}
+	msg.Chat = chat.String()
+	sender := b.resolve(ctx, client, info.Sender)
+	if sender.Server == types.HiddenUserServer && info.SenderAlt.Server == types.DefaultUserServer {
+		sender = info.SenderAlt.ToNonAD()
+	}
+	msg.From = sender.String()
+	if name := b.savedName(ctx, client, sender); name != "" && !info.IsFromMe {
+		msg.FromName = name
+	}
+	if img := evt.Message.GetImageMessage(); img != nil {
+		msg.Media = encodeImage(img)
+	}
+}
+
 func (b *bridge) send(jid, text string) (Message, error) {
 	if strings.TrimSpace(jid) == "" {
 		return Message{}, errors.New("conversa não informada")
@@ -231,8 +364,15 @@ func (b *bridge) handleEvent(client *whatsmeow.Client, evt any) {
 		}
 	case *events.Message:
 		if isRelevantMessage(e) {
-			b.out.write(messageEvent(messageFromEvent(e), false))
+			msg := messageFromEvent(e)
+			b.enrich(client, e, &msg)
+			b.out.write(messageEvent(msg, false))
 		}
+	case *events.Archive:
+		ctx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
+		jid := b.resolve(ctx, client, e.JID)
+		cancel()
+		b.out.write(archivedEvent(jid.String(), e.Action.GetArchived()))
 	case *events.HistorySync:
 		b.handleHistory(client, e)
 	case *events.LoggedOut:
@@ -264,7 +404,9 @@ func (b *bridge) handleHistory(client *whatsmeow.Client, evt *events.HistorySync
 				continue
 			}
 			if isRelevantMessage(parsed) {
-				b.out.write(messageEvent(messageFromEvent(parsed), true))
+				msg := messageFromEvent(parsed)
+				b.enrich(client, parsed, &msg)
+				b.out.write(messageEvent(msg, true))
 			}
 		}
 	}

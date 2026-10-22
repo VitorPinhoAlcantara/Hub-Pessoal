@@ -159,6 +159,36 @@ fn view_builds_with_every_item() {
     let _ = chat.view();
 }
 
+#[test]
+fn text_and_pdf_files_become_attachments() {
+    let text = Attachment::from_bytes("notas.md".into(), b"# oi".to_vec()).unwrap();
+    assert!(matches!(&text.kind, AttachmentKind::Text { content } if &**content == "# oi"));
+    assert!(text.preview().is_none());
+    let pdf = Attachment::from_bytes("doc.PDF".into(), b"%PDF-1.7".to_vec()).unwrap();
+    assert!(matches!(pdf.kind, AttachmentKind::Pdf { .. }));
+    assert!(Attachment::from_bytes("app.exe".into(), vec![0x4d, 0x5a, 0, 0xff]).is_err());
+    assert!(Attachment::from_bytes("grande.txt".into(), vec![b'a'; MAX_TEXT_BYTES + 1]).is_err());
+    let mut chat = chat();
+    send(
+        &mut chat,
+        [
+            Message::AttachmentLoaded(Ok(text)),
+            Message::AttachmentLoaded(Ok(pdf)),
+        ],
+    );
+    assert_eq!(chat.attachments().len(), 2);
+    let _ = chat.view();
+    send(
+        &mut chat,
+        [Message::ClipboardRead(ClipboardContent {
+            files: Vec::new(),
+            png: Some(PNG.to_vec()),
+        })],
+    );
+    assert_eq!(chat.attachments().len(), 3);
+    assert_eq!(chat.attachments()[2].name, "imagem colada.png");
+}
+
 fn fake_cli(temp: &tempfile::TempDir, windows: &str, linux: &str) -> ClaudeCli {
     let os = Os::current();
     let file = match os {
@@ -190,7 +220,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"fake-1
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "teste".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             session: None,
         })
         .collect()
@@ -211,7 +241,7 @@ async fn cli_provider_reports_failure_without_result() {
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "x".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             session: None,
         })
         .collect()
@@ -226,7 +256,7 @@ async fn missing_program_is_reported() {
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "x".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             session: None,
         })
         .collect()

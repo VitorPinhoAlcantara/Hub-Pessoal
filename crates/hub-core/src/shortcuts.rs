@@ -85,8 +85,10 @@ pub struct Shortcut {
     pub group: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ShortcutsFile {
+    #[serde(rename = "recolhidos", default, skip_serializing_if = "Vec::is_empty")]
+    collapsed: Vec<String>,
     #[serde(rename = "atalho", default)]
     items: Vec<Shortcut>,
 }
@@ -94,12 +96,38 @@ struct ShortcutsFile {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Loaded {
     pub shortcuts: Vec<Shortcut>,
+    pub collapsed: Vec<String>,
     pub problem: Option<String>,
+}
+
+impl Loaded {
+    fn valid(file: ShortcutsFile) -> Self {
+        Self {
+            shortcuts: file.items,
+            collapsed: file.collapsed,
+            problem: None,
+        }
+    }
+
+    fn stale(file: Option<ShortcutsFile>, problem: String) -> Self {
+        let file = file.unwrap_or_default();
+        Self {
+            shortcuts: file.items,
+            collapsed: file.collapsed,
+            problem: Some(problem),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveTarget {
+    Shortcut(usize),
+    GroupEnd(String),
 }
 
 #[derive(Default)]
 pub struct ShortcutStore {
-    last_valid: Option<Vec<Shortcut>>,
+    last_valid: Option<ShortcutsFile>,
 }
 
 impl ShortcutStore {
@@ -110,69 +138,162 @@ impl ShortcutStore {
                 return Loaded::default();
             }
             Err(error) => {
-                return Loaded {
-                    shortcuts: self.last_valid.clone().unwrap_or_default(),
-                    problem: Some(error.to_string()),
-                };
+                return Loaded::stale(self.last_valid.clone(), error.to_string());
             }
         };
         match toml::from_str::<ShortcutsFile>(&text) {
             Ok(file) => {
-                self.last_valid = Some(file.items.clone());
-                Loaded {
-                    shortcuts: file.items,
-                    problem: None,
-                }
+                self.last_valid = Some(file.clone());
+                Loaded::valid(file)
             }
             Err(error) => {
                 tracing::warn!(%error, "atalhos.toml inválido");
-                Loaded {
-                    shortcuts: self.last_valid.clone().unwrap_or_default(),
-                    problem: Some(format!(
-                        "atalhos.toml inválido, mostrando a última versão válida: {error}"
-                    )),
-                }
+                Loaded::stale(
+                    self.last_valid.clone(),
+                    format!("atalhos.toml inválido, mostrando a última versão válida: {error}"),
+                )
             }
         }
     }
 
-    fn editable(&mut self, path: &Path) -> Result<Vec<Shortcut>> {
+    fn editable(&mut self, path: &Path) -> Result<ShortcutsFile> {
         let loaded = self.load(path);
         match loaded.problem {
             Some(problem) => Err(ShortcutError::Invalid(problem)),
-            None => Ok(loaded.shortcuts),
+            None => Ok(ShortcutsFile {
+                collapsed: loaded.collapsed,
+                items: loaded.shortcuts,
+            }),
         }
+    }
+
+    fn commit(&mut self, path: &Path, file: ShortcutsFile) -> Result<()> {
+        save(path, &file)?;
+        self.last_valid = Some(file);
+        Ok(())
     }
 
     pub fn add(&mut self, path: &Path, shortcut: Shortcut) -> Result<usize> {
         let shortcut = validate(shortcut)?;
-        let mut items = self.editable(path)?;
-        items.push(shortcut);
-        save(path, &items)?;
-        self.last_valid = Some(items.clone());
-        Ok(items.len() - 1)
+        let mut file = self.editable(path)?;
+        file.items.push(shortcut);
+        let index = file.items.len() - 1;
+        self.commit(path, file)?;
+        Ok(index)
     }
 
     pub fn update(&mut self, path: &Path, index: usize, shortcut: Shortcut) -> Result<()> {
         let shortcut = validate(shortcut)?;
-        let mut items = self.editable(path)?;
-        let slot = items.get_mut(index).ok_or(ShortcutError::NotFound(index))?;
+        let mut file = self.editable(path)?;
+        let slot = file
+            .items
+            .get_mut(index)
+            .ok_or(ShortcutError::NotFound(index))?;
         *slot = shortcut;
-        save(path, &items)?;
-        self.last_valid = Some(items);
-        Ok(())
+        self.commit(path, file)
     }
 
     pub fn remove(&mut self, path: &Path, index: usize) -> Result<Shortcut> {
-        let mut items = self.editable(path)?;
-        if index >= items.len() {
+        let mut file = self.editable(path)?;
+        if index >= file.items.len() {
             return Err(ShortcutError::NotFound(index));
         }
-        let removed = items.remove(index);
-        save(path, &items)?;
-        self.last_valid = Some(items);
+        let removed = file.items.remove(index);
+        self.commit(path, file)?;
         Ok(removed)
     }
+
+    pub fn move_shortcut(&mut self, path: &Path, from: usize, target: MoveTarget) -> Result<()> {
+        let mut file = self.editable(path)?;
+        if from >= file.items.len() {
+            return Err(ShortcutError::NotFound(from));
+        }
+        if move_shortcut(&mut file.items, from, &target) {
+            self.commit(path, file)?;
+        }
+        Ok(())
+    }
+
+    pub fn move_group(&mut self, path: &Path, group: &str, target: &str) -> Result<()> {
+        let mut file = self.editable(path)?;
+        if move_group(&mut file.items, group, target) {
+            self.commit(path, file)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_collapsed(&mut self, path: &Path, group: &str, collapsed: bool) -> Result<()> {
+        let mut file = self.editable(path)?;
+        let present = file.collapsed.iter().any(|g| g == group);
+        if present == collapsed {
+            return Ok(());
+        }
+        if collapsed {
+            file.collapsed.push(group.to_string());
+        } else {
+            file.collapsed.retain(|g| g != group);
+        }
+        self.commit(path, file)
+    }
+}
+
+pub fn move_shortcut(items: &mut Vec<Shortcut>, from: usize, target: &MoveTarget) -> bool {
+    if from >= items.len() {
+        return false;
+    }
+    match target {
+        MoveTarget::Shortcut(to) => {
+            let to = *to;
+            if to == from || to >= items.len() {
+                return false;
+            }
+            let group = items[to].group.clone();
+            let after = from < to && items[from].group == group;
+            let mut item = items.remove(from);
+            item.group = group;
+            let to = if from < to { to - 1 } else { to };
+            items.insert(if after { to + 1 } else { to }, item);
+            true
+        }
+        MoveTarget::GroupEnd(group) => {
+            if items.iter().rposition(|s| &s.group == group) == Some(from) {
+                return false;
+            }
+            let mut item = items.remove(from);
+            item.group = group.clone();
+            match items.iter().rposition(|s| &s.group == group) {
+                Some(last) => items.insert(last + 1, item),
+                None => items.push(item),
+            }
+            true
+        }
+    }
+}
+
+pub fn move_group(items: &mut Vec<Shortcut>, group: &str, target: &str) -> bool {
+    let order = groups(items);
+    let (Some(from), Some(to)) = (
+        order.iter().position(|g| g == group),
+        order.iter().position(|g| g == target),
+    ) else {
+        return false;
+    };
+    if from == to {
+        return false;
+    }
+    let (moved, mut rest): (Vec<Shortcut>, Vec<Shortcut>) = std::mem::take(items)
+        .into_iter()
+        .partition(|s| s.group == group);
+    let position = if from < to {
+        rest.iter()
+            .rposition(|s| s.group == target)
+            .map_or(rest.len(), |i| i + 1)
+    } else {
+        rest.iter().position(|s| s.group == target).unwrap_or(0)
+    };
+    rest.splice(position..position, moved);
+    *items = rest;
+    true
 }
 
 fn validate(mut shortcut: Shortcut) -> Result<Shortcut> {
@@ -190,14 +311,11 @@ fn validate(mut shortcut: Shortcut) -> Result<Shortcut> {
     Ok(shortcut)
 }
 
-fn save(path: &Path, items: &[Shortcut]) -> Result<()> {
+fn save(path: &Path, file: &ShortcutsFile) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = ShortcutsFile {
-        items: items.to_vec(),
-    };
-    std::fs::write(path, toml::to_string_pretty(&file)?)?;
+    std::fs::write(path, toml::to_string_pretty(file)?)?;
     Ok(())
 }
 
@@ -441,5 +559,93 @@ mod tests {
             platform.calls(),
             vec![PlatformCall::RevealPath(PathBuf::from("C:\\Pasta"))]
         );
+    }
+
+    fn names(items: &[Shortcut]) -> Vec<String> {
+        items
+            .iter()
+            .map(|s| format!("{}:{}", s.group, s.name))
+            .collect()
+    }
+
+    fn sample() -> Vec<Shortcut> {
+        vec![
+            shortcut("a", ShortcutKind::Url, "a", "G1"),
+            shortcut("b", ShortcutKind::Url, "b", "G1"),
+            shortcut("c", ShortcutKind::Url, "c", "G1"),
+            shortcut("x", ShortcutKind::Url, "x", "G2"),
+            shortcut("y", ShortcutKind::Url, "y", "G2"),
+            shortcut("z", ShortcutKind::Url, "z", "G3"),
+        ]
+    }
+
+    #[test]
+    fn move_shortcut_within_and_across_groups() {
+        let mut items = sample();
+        assert!(move_shortcut(&mut items, 0, &MoveTarget::Shortcut(2)));
+        assert_eq!(names(&items)[..3], ["G1:b", "G1:c", "G1:a"]);
+        assert!(move_shortcut(&mut items, 2, &MoveTarget::Shortcut(0)));
+        assert_eq!(names(&items)[..3], ["G1:a", "G1:b", "G1:c"]);
+        assert!(move_shortcut(&mut items, 0, &MoveTarget::Shortcut(4)));
+        assert_eq!(
+            names(&items),
+            ["G1:b", "G1:c", "G2:x", "G2:a", "G2:y", "G3:z"]
+        );
+        assert!(move_shortcut(
+            &mut items,
+            5,
+            &MoveTarget::GroupEnd("G1".into())
+        ));
+        assert_eq!(
+            names(&items),
+            ["G1:b", "G1:c", "G1:z", "G2:x", "G2:a", "G2:y"]
+        );
+        assert!(!move_shortcut(&mut items, 1, &MoveTarget::Shortcut(1)));
+        assert!(!move_shortcut(
+            &mut items,
+            2,
+            &MoveTarget::GroupEnd("G1".into())
+        ));
+        assert!(!move_shortcut(&mut items, 9, &MoveTarget::Shortcut(0)));
+    }
+
+    #[test]
+    fn move_group_places_block_around_target() {
+        let mut items = sample();
+        assert!(move_group(&mut items, "G1", "G2"));
+        assert_eq!(groups(&items), ["G2", "G1", "G3"]);
+        assert!(move_group(&mut items, "G3", "G2"));
+        assert_eq!(groups(&items), ["G3", "G2", "G1"]);
+        assert_eq!(names(&items)[1..3], ["G2:x", "G2:y"]);
+        assert!(!move_group(&mut items, "G3", "G3"));
+        assert!(!move_group(&mut items, "G9", "G1"));
+    }
+
+    #[test]
+    fn store_persists_order_and_collapsed_groups() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("atalhos.toml");
+        let mut store = ShortcutStore::default();
+        for item in sample() {
+            store.add(&path, item).unwrap();
+        }
+        store.set_collapsed(&path, "G2", true).unwrap();
+        store.set_collapsed(&path, "G2", true).unwrap();
+        store
+            .move_shortcut(&path, 5, MoveTarget::Shortcut(0))
+            .unwrap();
+        store.move_group(&path, "G2", "G1").unwrap();
+        let loaded = ShortcutStore::default().load(&path);
+        assert_eq!(loaded.collapsed, ["G2"]);
+        assert_eq!(
+            names(&loaded.shortcuts),
+            ["G2:x", "G2:y", "G1:z", "G1:a", "G1:b", "G1:c"]
+        );
+        store.set_collapsed(&path, "G2", false).unwrap();
+        assert!(ShortcutStore::default().load(&path).collapsed.is_empty());
+        assert!(matches!(
+            store.move_shortcut(&path, 42, MoveTarget::Shortcut(0)),
+            Err(ShortcutError::NotFound(42))
+        ));
     }
 }

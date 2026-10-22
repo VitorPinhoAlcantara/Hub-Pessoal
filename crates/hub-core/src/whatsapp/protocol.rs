@@ -18,6 +18,8 @@ pub struct WireMessage {
     pub tipo: String,
     #[serde(default)]
     pub historico: bool,
+    #[serde(default)]
+    pub midia: String,
 }
 
 fn default_kind() -> String {
@@ -33,12 +35,25 @@ pub struct WireConversation {
     pub grupo: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireChatInfo {
+    pub jid: String,
+    #[serde(default, rename = "telefone")]
+    pub phone: String,
+    #[serde(default)]
+    pub nome: String,
+    #[serde(default)]
+    pub arquivada: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Login,
     ListConversations,
     ListMessages { jid: String, limit: usize },
     Send { jid: String, text: String },
+    ChatInfo { jids: Vec<String> },
+    DownloadMedia { id: String, media: String },
     Shutdown,
 }
 
@@ -51,6 +66,10 @@ pub fn encode(request: &Request, id: u64) -> String {
         }
         Request::Send { jid, text } => {
             json!({ "id": id, "cmd": "enviar", "jid": jid, "texto": text })
+        }
+        Request::ChatInfo { jids } => json!({ "id": id, "cmd": "info_conversas", "jids": jids }),
+        Request::DownloadMedia { id: message, media } => {
+            json!({ "id": id, "cmd": "baixar_midia", "mensagem_id": message, "midia": media })
         }
         Request::Shutdown => json!({ "id": id, "cmd": "encerrar" }),
     };
@@ -67,6 +86,10 @@ pub enum Incoming {
     Connected(String),
     Message(WireMessage),
     Disconnected(String),
+    Archived {
+        jid: String,
+        archived: bool,
+    },
     Error(String),
 }
 
@@ -105,6 +128,10 @@ pub fn parse(line: &str) -> Option<Incoming> {
             Some(Incoming::Message(message))
         }
         "desconectado" => Some(Incoming::Disconnected(text("motivo"))),
+        "arquivada" => Some(Incoming::Archived {
+            jid: text("jid"),
+            archived: value.get("arquivada").and_then(Value::as_bool)?,
+        }),
         "erro" => Some(Incoming::Error(text("mensagem"))),
         _ => None,
     }
@@ -173,6 +200,27 @@ mod tests {
         };
         assert_eq!(message.nome_de, "Ana");
         assert!(message.historico);
+        assert_eq!(
+            parse(r#"{"evento":"arquivada","jid":"1@s.whatsapp.net","arquivada":false}"#),
+            Some(Incoming::Archived {
+                jid: "1@s.whatsapp.net".into(),
+                archived: false
+            })
+        );
+        assert!(parse(r#"{"evento":"arquivada","jid":"x"}"#).is_none());
+        let info: Value = serde_json::from_str(
+            encode(
+                &Request::DownloadMedia {
+                    id: "A1".into(),
+                    media: "Zm9v".into(),
+                },
+                2,
+            )
+            .trim(),
+        )
+        .unwrap();
+        assert_eq!(info["cmd"], "baixar_midia");
+        assert_eq!(info["mensagem_id"], "A1");
         assert!(parse("lixo").is_none());
         assert!(parse(r#"{"evento":"desconhecido"}"#).is_none());
     }

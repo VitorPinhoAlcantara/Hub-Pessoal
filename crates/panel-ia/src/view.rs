@@ -39,10 +39,31 @@ fn previews<'a>(attachments: &'a [Attachment], removable: bool) -> Element<'a, M
         .iter()
         .enumerate()
         .fold(Row::new().spacing(units(2)), |r, (index, attachment)| {
-            let thumb = image(attachment.preview.clone())
+            let thumb: Element<'a, Message> = match attachment.preview() {
+                Some(preview) => image(preview.clone())
+                    .width(PREVIEW_SIZE)
+                    .height(PREVIEW_SIZE)
+                    .content_fit(hub_ui_kit::iced::ContentFit::Cover)
+                    .into(),
+                None => container(
+                    column![
+                        icon(Icon::File, ICON_SIZE, TEXT_SECONDARY),
+                        text(attachment.name.as_str())
+                            .size(FONT_SIZE_SMALL)
+                            .color(TEXT_SECONDARY)
+                            .wrapping(text::Wrapping::None)
+                    ]
+                    .spacing(units(1))
+                    .align_x(Alignment::Center),
+                )
+                .padding(units(1))
                 .width(PREVIEW_SIZE)
                 .height(PREVIEW_SIZE)
-                .content_fit(hub_ui_kit::iced::ContentFit::Cover);
+                .center_y(PREVIEW_SIZE)
+                .clip(true)
+                .style(style::elevated)
+                .into(),
+            };
             let cell: Element<'a, Message> = if removable {
                 column![
                     thumb,
@@ -55,7 +76,7 @@ fn previews<'a>(attachments: &'a [Attachment], removable: bool) -> Element<'a, M
                 .align_x(Alignment::Center)
                 .into()
             } else {
-                thumb.into()
+                thumb
             };
             r.push(cell)
         })
@@ -194,6 +215,15 @@ fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
     {
         return Some(Binding::Custom(Message::Send));
     }
+    if matches!(press.status, text_editor::Status::Focused { .. })
+        && press.modifiers.command()
+        && matches!(&press.key, Key::Character(c) if c.as_str() == "v")
+    {
+        return Some(Binding::Sequence(vec![
+            Binding::Paste,
+            Binding::Custom(Message::PasteAttachments),
+        ]));
+    }
     Binding::from_key_press(press)
 }
 
@@ -235,7 +265,7 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
                 small("cria um atalho para o GitHub"),
                 space().height(units(2)),
                 small("Enter envia, Shift+Enter quebra a linha."),
-                small("Arraste imagens para cá ou use o clipe para anexar."),
+                small("Cole com Ctrl+V, arraste arquivos para cá ou use o clipe para anexar."),
                 small("Clique com o botão direito numa mensagem para copiar ou reenviar."),
             ]
             .spacing(units(2)),
@@ -283,7 +313,7 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         .min_height(units(9))
         .max_height(units(40))
         .style(style::editor);
-    let attach = icon_button(Icon::Attach, TEXT_SECONDARY, Some(Message::AttachImages));
+    let attach = icon_button(Icon::Attach, TEXT_SECONDARY, Some(Message::AttachFiles));
     let mut composer = Column::new().spacing(units(2));
     if !chat.attachments().is_empty() {
         composer = composer.push(previews(chat.attachments(), true));

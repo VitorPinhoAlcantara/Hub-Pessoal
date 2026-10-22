@@ -8,7 +8,7 @@ use futures::{FutureExt, Stream, StreamExt};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::protocol::{self, Incoming, Request, WireConversation, WireMessage};
+use super::protocol::{self, Incoming, Request, WireChatInfo, WireConversation, WireMessage};
 use crate::platform::{self, CommandSpec};
 
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -61,6 +61,25 @@ impl BridgeHandle {
         serde_json::from_value(value).map_err(|e| e.to_string())
     }
 
+    pub async fn chat_info(&self, jids: Vec<String>) -> Result<Vec<WireChatInfo>, String> {
+        let value = self.call(Request::ChatInfo { jids }).await?;
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
+    pub async fn download_media(&self, id: &str, media: &str) -> Result<PathBuf, String> {
+        let value = self
+            .call(Request::DownloadMedia {
+                id: id.to_string(),
+                media: media.to_string(),
+            })
+            .await?;
+        value
+            .get("caminho")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .ok_or_else(|| "o WhatsApp não informou onde salvou a imagem".to_string())
+    }
+
     pub async fn send_text(&self, jid: &str, text: &str) -> Result<WireMessage, String> {
         let value = self
             .call(Request::Send {
@@ -79,6 +98,7 @@ pub enum BridgeEvent {
     Connected(String),
     Message(WireMessage),
     Disconnected(String),
+    Archived(String, bool),
     Error(String),
     Exited(String),
 }
@@ -149,6 +169,9 @@ async fn drive(command: CommandSpec, cwd: PathBuf, out: mpsc::UnboundedSender<Br
                     }
                     Some(Incoming::Disconnected(reason)) => {
                         let _ = out.unbounded_send(BridgeEvent::Disconnected(reason));
+                    }
+                    Some(Incoming::Archived { jid, archived }) => {
+                        let _ = out.unbounded_send(BridgeEvent::Archived(jid, archived));
                     }
                     Some(Incoming::Error(error)) => {
                         let _ = out.unbounded_send(BridgeEvent::Error(error));

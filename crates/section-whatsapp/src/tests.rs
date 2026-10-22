@@ -22,6 +22,7 @@ fn send(section: &mut WhatsApp, messages: impl IntoIterator<Item = Message>) {
     for message in messages {
         let _ = section.update(message);
     }
+    let _ = section.update(Message::Flush);
 }
 
 fn incoming(id: &str, jid: &str, text: &str) -> WireMessage {
@@ -35,6 +36,7 @@ fn incoming(id: &str, jid: &str, text: &str) -> WireMessage {
         em: 1_792_627_000,
         tipo: "texto".into(),
         historico: false,
+        midia: String::new(),
     }
 }
 
@@ -224,4 +226,65 @@ fn right_click_offers_alias_and_missing_sidecar_has_guide() {
         ))],
     );
     let _ = section.view();
+}
+
+#[test]
+fn archived_conversations_are_hidden_until_toggled() {
+    let mut section = section();
+    send(
+        &mut section,
+        [
+            Message::Bridge(BridgeEvent::Message(incoming(
+                "1",
+                "ana@s.whatsapp.net",
+                "oi",
+            ))),
+            Message::Bridge(BridgeEvent::Message(incoming("2", "123@g.us", "grupo"))),
+            Message::Bridge(BridgeEvent::Archived("123@g.us".into(), true)),
+        ],
+    );
+    assert_eq!(section.conversations().len(), 1);
+    assert_eq!(section.archived_count(), 1);
+    let _ = section.view();
+    send(&mut section, [Message::ArchivedToggled]);
+    assert_eq!(section.conversations()[0].jid, "123@g.us");
+    let _ = section.view();
+    send(
+        &mut section,
+        [Message::ArchivedToggled, Message::QueryChanged("@".into())],
+    );
+    assert_eq!(section.conversations().len(), 2);
+}
+
+#[test]
+fn images_download_only_when_requested() {
+    let mut section = section();
+    let mut image = incoming("I1", "ana@s.whatsapp.net", "");
+    image.tipo = "imagem".into();
+    image.midia = "Zm9v".into();
+    send(
+        &mut section,
+        [
+            Message::Bridge(BridgeEvent::Message(image)),
+            Message::Selected("ana@s.whatsapp.net".into()),
+        ],
+    );
+    assert!(section.media("I1").is_none());
+    let _ = section.view();
+    send(&mut section, [Message::MediaRequested("I1".into())]);
+    assert!(matches!(section.media("I1"), Some(Media::Failed(_))));
+    send(
+        &mut section,
+        [Message::MediaLoaded(
+            "I1".into(),
+            Ok(std::path::PathBuf::from("foto.jpg")),
+        )],
+    );
+    assert!(matches!(section.media("I1"), Some(Media::Ready(..))));
+    let _ = section.view();
+    send(
+        &mut section,
+        [Message::MediaLoaded("I1".into(), Err("expirou".into()))],
+    );
+    assert!(matches!(section.media("I1"), Some(Media::Failed(e)) if e == "expirou"));
 }
