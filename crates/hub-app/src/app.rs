@@ -16,10 +16,12 @@ use iced::{Element, Size, Subscription, Task, Theme};
 use section_agenda::Agenda;
 use section_atalhos::Shortcuts;
 use section_scripts::Scripts;
+use section_whatsapp::WhatsApp;
 use std::sync::Arc;
 
 use hub_mcp::McpServer;
 use panel_ia::{Chat, ClaudeCli};
+use panel_player::Player;
 
 use crate::{Options, app_icon, shell, streams};
 
@@ -59,8 +61,10 @@ pub enum Message {
     Agenda(section_agenda::Message),
     Scripts(section_scripts::Message),
     Shortcuts(section_atalhos::Message),
+    WhatsApp(section_whatsapp::Message),
     ScheduledRun(String, RunEvent),
     Chat(panel_ia::Message),
+    Player(panel_player::Message),
     ConfirmAnswered(u64, bool),
     DragWindow,
     ResizeWindow(Direction),
@@ -84,7 +88,9 @@ pub struct App {
     pub agenda: Option<Agenda>,
     pub scripts: Option<Scripts>,
     pub shortcuts: Option<Shortcuts>,
+    pub whatsapp: Option<WhatsApp>,
     pub chat: Option<Chat>,
+    pub player: Option<Player>,
     pub confirmations: Vec<ConfirmRequest>,
     pub mcp: Result<McpServer, String>,
     pub missed: Vec<Reminder>,
@@ -161,7 +167,9 @@ impl App {
             agenda: None,
             scripts: None,
             shortcuts: None,
+            whatsapp: None,
             chat: None,
+            player: None,
             confirmations: Vec::new(),
             mcp,
             missed,
@@ -205,7 +213,13 @@ impl App {
                     section.on_hide();
                 }
             }
-            Tab::WhatsApp | Tab::Settings => {}
+            Tab::WhatsApp => {
+                if let Some(section) = &mut self.whatsapp {
+                    section.on_hide();
+                }
+                self.whatsapp = None;
+            }
+            Tab::Settings => {}
         }
     }
 
@@ -214,11 +228,13 @@ impl App {
         self.agenda = None;
         self.scripts = None;
         self.shortcuts = None;
+        self.whatsapp = None;
         if let Some(chat) = &mut self.chat {
             chat.on_hide();
         }
         self.chat = None;
         self.maximized = false;
+        self.sync_player_visibility();
     }
 
     fn ensure_section(&mut self, tab: Tab) {
@@ -235,6 +251,9 @@ impl App {
             Tab::Shortcuts if self.shortcuts.is_none() => {
                 self.shortcuts = Some(Shortcuts::new(self.ctx.clone()));
             }
+            Tab::WhatsApp if self.whatsapp.is_none() => {
+                self.whatsapp = Some(WhatsApp::new(self.ctx.clone()));
+            }
             _ => {}
         }
     }
@@ -245,6 +264,22 @@ impl App {
         }
         self.tab = tab;
         self.ensure_section(tab);
+    }
+
+    fn ensure_player(&mut self) -> Task<Message> {
+        if self.player.is_some() {
+            return Task::none();
+        }
+        let (player, task) = Player::new(self.ctx.clone());
+        self.player = Some(player);
+        task.map(Message::Player)
+    }
+
+    fn sync_player_visibility(&mut self) {
+        let visible = self.player_open && self.window.is_some();
+        if let Some(player) = &mut self.player {
+            player.set_visible(visible);
+        }
     }
 
     fn ensure_chat(&mut self) {
@@ -270,6 +305,7 @@ impl App {
         match message {
             Message::WindowOpened(id) => {
                 self.ensure_section(self.tab);
+                self.sync_player_visibility();
                 if self.options.smoke_test {
                     tracing::info!(?id, "teste de fumaça: janela aberta");
                     return Task::perform(streams::after(SMOKE_STEP), |_| Message::SmokeStep(1));
@@ -304,6 +340,11 @@ impl App {
             Message::Shortcuts(message) => {
                 if let Some(shortcuts) = &mut self.shortcuts {
                     return shortcuts.update(message).map(Message::Shortcuts);
+                }
+            }
+            Message::WhatsApp(message) => {
+                if let Some(whatsapp) = &mut self.whatsapp {
+                    return whatsapp.update(message).map(Message::WhatsApp);
                 }
             }
             Message::ScheduledRun(id, event) => {
@@ -351,7 +392,17 @@ impl App {
                 self.ctx.confirmations.answer(id, approved);
                 self.confirmations.retain(|c| c.id != id);
             }
-            Message::TogglePlayer => self.player_open = !self.player_open,
+            Message::TogglePlayer => {
+                self.player_open = !self.player_open;
+                let task = self.ensure_player();
+                self.sync_player_visibility();
+                return task;
+            }
+            Message::Player(message) => {
+                if let Some(player) = &mut self.player {
+                    return player.update(message).map(Message::Player);
+                }
+            }
             Message::Bus(event) => return self.on_bus(event),
             Message::SchedulerWake => {
                 let due = match scheduler::tick(&self.ctx) {
@@ -413,7 +464,25 @@ impl App {
                 return self.open_window();
             }
             HubEvent::ConfirmationClosed(id) => self.confirmations.retain(|c| c.id != id),
-            HubEvent::PlayRequested(_) => {}
+            HubEvent::PlayRequested(url) => {
+                self.player_open = true;
+                let boot = self.ensure_player();
+                self.sync_player_visibility();
+                let play = match &mut self.player {
+                    Some(player) => player
+                        .update(panel_player::Message::Play(url))
+                        .map(Message::Player),
+                    None => Task::none(),
+                };
+                return Task::batch([boot, play]);
+            }
+            HubEvent::WhatsAppChanged => {
+                if let Some(whatsapp) = &mut self.whatsapp {
+                    return whatsapp
+                        .update(section_whatsapp::Message::Refresh)
+                        .map(Message::WhatsApp);
+                }
+            }
             HubEvent::ShowWindow => return self.open_window(),
             HubEvent::QuitRequested => return iced::exit(),
             HubEvent::ConfigChanged => {}
@@ -460,6 +529,9 @@ impl App {
                 .map(|_| Message::SchedulerWake),
             window::close_events().map(Message::WindowClosed),
         ];
+        if let Some(player) = &self.player {
+            subscriptions.push(player.subscription().map(Message::Player));
+        }
         if self.window.is_some() {
             subscriptions.push(window::close_requests().map(Message::CloseRequested));
             let section = match self.tab {
@@ -475,7 +547,11 @@ impl App {
                     .shortcuts
                     .as_ref()
                     .map(|s| s.subscription().map(Message::Shortcuts)),
-                Tab::WhatsApp | Tab::Settings => None,
+                Tab::WhatsApp => self
+                    .whatsapp
+                    .as_ref()
+                    .map(|s| s.subscription().map(Message::WhatsApp)),
+                Tab::Settings => None,
             };
             subscriptions.extend(section);
         }

@@ -180,3 +180,32 @@ fn ai_panel_is_created_on_demand_without_mcp_in_tests() {
     let _ = app.update(Message::WindowClosed(id));
     assert!(app.chat.is_none());
 }
+
+#[test]
+fn play_request_opens_player_and_keeps_it_after_window_closes() {
+    let (mut app, _, _) = setup();
+    let id = open(&mut app);
+    assert!(app.player.is_none());
+    let _ = app.update(Message::Bus(HubEvent::PlayRequested(
+        "https://www.youtube.com/playlist?list=abc".into(),
+    )));
+    assert!(app.player_open);
+    assert!(app.player.is_some());
+    let _ = app.view(id);
+    let _ = app.update(Message::WindowClosed(id));
+    assert!(app.player.is_some());
+    let _ = app.update(Message::TogglePlayer);
+    assert!(!app.player_open);
+}
+
+#[test]
+fn whatsapp_tab_is_heavy_and_released_on_hide() {
+    let (mut app, _, _) = setup();
+    let id = open(&mut app);
+    let _ = app.update(Message::TabSelected(Tab::WhatsApp));
+    assert!(app.whatsapp.is_some());
+    let _ = app.view(id);
+    let _ = app.update(Message::TabSelected(Tab::Agenda));
+    assert!(app.whatsapp.is_none());
+    assert!(app.ctx.whatsapp.get().is_none());
+}

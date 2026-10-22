@@ -183,6 +183,18 @@ pub fn hide_console(command: &mut tokio::process::Command) {
     }
 }
 
+pub fn hide_console_std(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
 pub fn shell_command(os: Os, command: &str) -> CommandSpec {
     match os {
         Os::Windows => CommandSpec::new("cmd").arg("/C").arg(command),

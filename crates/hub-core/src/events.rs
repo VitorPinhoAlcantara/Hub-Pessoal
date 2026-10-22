@@ -13,6 +13,7 @@ pub enum HubEvent {
     ConfirmationRequested(ConfirmRequest),
     ConfirmationClosed(u64),
     PlayRequested(String),
+    WhatsAppChanged,
 }
 
 #[derive(Clone)]

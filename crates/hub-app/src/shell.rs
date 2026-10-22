@@ -10,7 +10,6 @@ use iced::{Alignment, Element, Length, Padding, mouse};
 use crate::app::{App, Message, Tab};
 
 const EDGE: f32 = 5.0;
-const PLAYER_WIDTH: f32 = 300.0;
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let body = row![sidebar(app), main_area(app)].height(Length::Fill);
@@ -161,7 +160,10 @@ fn main_area(app: &App) -> Element<'_, Message> {
             Some(shortcuts) => shortcuts.view().map(Message::Shortcuts),
             None => panel(muted("Carregando")).into(),
         },
-        Tab::WhatsApp => placeholder("WhatsApp", "A aba do WhatsApp chega na Fase 5."),
+        Tab::WhatsApp => match &app.whatsapp {
+            Some(whatsapp) => whatsapp.view().map(Message::WhatsApp),
+            None => panel(muted("Carregando")).into(),
+        },
         Tab::Settings => settings(app),
     };
     let mut panels = row![content].spacing(GAP_PANEL).height(Length::Fill);
@@ -174,25 +176,14 @@ fn main_area(app: &App) -> Element<'_, Message> {
         .padding(Padding::default().right(GAP_PANEL).bottom(GAP_PANEL))
         .width(Length::Fill)
         .height(Length::Fill);
-    if app.player_open {
-        stack![area, player_overlay()].into()
-    } else {
-        area.into()
+    match (&app.player, app.player_open) {
+        (Some(player), true) => stack![area, player_overlay(player)].into(),
+        _ => area.into(),
     }
 }
 
-fn player_overlay<'a>() -> Element<'a, Message> {
-    let card = container(
-        row![
-            icon(Icon::Player, ICON_SIZE, ACCENT),
-            column![body("Player"), small("Chega na Fase 4")].spacing(2),
-        ]
-        .spacing(units(3))
-        .align_y(Alignment::Center),
-    )
-    .padding(units(3))
-    .width(PLAYER_WIDTH)
-    .style(style::elevated);
+fn player_overlay(player: &panel_player::Player) -> Element<'_, Message> {
+    let card = player.view().map(Message::Player);
     container(opaque(card))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -204,10 +195,6 @@ fn player_overlay<'a>() -> Element<'a, Message> {
                 .bottom(GAP_PANEL * 3.0),
         )
         .into()
-}
-
-fn placeholder<'a>(name: &'a str, detail: &'a str) -> Element<'a, Message> {
-    panel(column![title(name), muted(detail)].spacing(units(2))).into()
 }
 
 fn status(active: bool) -> String {

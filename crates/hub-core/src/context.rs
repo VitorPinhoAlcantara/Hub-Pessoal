@@ -9,6 +9,7 @@ use crate::paths::HubPaths;
 use crate::platform::Platform;
 use crate::scripts::{Script, ScriptStore};
 use crate::shortcuts::{Loaded, ShortcutStore};
+use crate::whatsapp::WhatsAppLink;
 use crate::{Config, Database};
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ pub struct HubContext {
     pub shortcut_store: Arc<Mutex<ShortcutStore>>,
     pub scheduler_mark: Arc<Mutex<NaiveDateTime>>,
     pub confirmations: ConfirmationBroker,
+    pub whatsapp: WhatsAppLink,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -49,6 +51,7 @@ impl HubContext {
             shortcut_store: Arc::new(Mutex::new(ShortcutStore::default())),
             scheduler_mark: Arc::new(Mutex::new(now)),
             confirmations: ConfirmationBroker::default(),
+            whatsapp: WhatsAppLink::default(),
         }
     }
 

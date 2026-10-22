@@ -5,6 +5,8 @@ use rusqlite::Connection;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_inicial.sql"),
     include_str!("../migrations/0002_notas_lembretes.sql"),
+    include_str!("../migrations/0003_player_favoritos.sql"),
+    include_str!("../migrations/0004_whatsapp.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]

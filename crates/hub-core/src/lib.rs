@@ -9,10 +9,12 @@ pub mod logging;
 pub mod paths;
 pub mod per_os;
 pub mod platform;
+pub mod player;
 pub mod scheduler;
 pub mod scripts;
 pub mod shortcuts;
 pub mod watcher;
+pub mod whatsapp;
 
 pub use chrono;
 

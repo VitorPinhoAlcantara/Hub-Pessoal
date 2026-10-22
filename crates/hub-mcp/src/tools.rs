@@ -8,6 +8,7 @@ use hub_core::events::HubEvent;
 use hub_core::per_os::PerOs;
 use hub_core::scripts::{self, NewScript, Origin, runner};
 use hub_core::shortcuts::{self, Shortcut, ShortcutKind};
+use hub_core::whatsapp;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerConfig};
@@ -137,6 +138,22 @@ pub struct AddShortcutRequest {
 pub struct PlayRequest {
     #[schemars(description = "Link de vídeo ou playlist do YouTube")]
     pub url: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WhatsAppReadRequest {
+    #[schemars(description = "Conversa: apelido, nome do contato ou grupo, ou o JID")]
+    pub conversa: String,
+    #[schemars(description = "Quantidade de mensagens mais recentes, padrão 20")]
+    pub limite: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WhatsAppSendRequest {
+    #[schemars(description = "Conversa: apelido, nome do contato ou grupo, ou o JID")]
+    pub conversa: String,
+    #[schemars(description = "Texto da mensagem")]
+    pub texto: String,
 }
 
 pub fn parse_date(text: &str, now: NaiveDateTime) -> Option<NaiveDate> {
@@ -567,6 +584,71 @@ impl HubTools {
     }
 
     #[tool(
+        description = "Lê as mensagens mais recentes de uma conversa do WhatsApp guardadas no hub"
+    )]
+    async fn whatsapp_ler(
+        &self,
+        Parameters(request): Parameters<WhatsAppReadRequest>,
+    ) -> Result<String, String> {
+        let db = self.ctx.db();
+        let conversation = whatsapp::find_conversation(db.conn(), &request.conversa)
+            .map_err(|e| e.to_string())?
+            .ok_or("conversa não encontrada no hub")?;
+        let limit = request.limite.unwrap_or(20).clamp(1, 100);
+        let messages =
+            whatsapp::messages(db.conn(), &conversation.jid, limit).map_err(|e| e.to_string())?;
+        let items: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                json!({
+                    "de": if m.mine { "eu".to_string() } else if m.sender_name.is_empty() { m.sender.clone() } else { m.sender_name.clone() },
+                    "texto": m.display_text(),
+                    "em": m.at.format("%Y-%m-%d %H:%M").to_string(),
+                })
+            })
+            .collect();
+        Ok(text(&json!({
+            "conversa": conversation.title(),
+            "jid": conversation.jid,
+            "grupo": conversation.group,
+            "mensagens": items,
+        })))
+    }
+
+    #[tool(
+        description = "Envia uma mensagem de texto no WhatsApp. Pede confirmação ao usuário e exige a aba WhatsApp aberta"
+    )]
+    async fn whatsapp_enviar(
+        &self,
+        Parameters(request): Parameters<WhatsAppSendRequest>,
+    ) -> Result<String, String> {
+        let texto = request.texto.trim().to_string();
+        if texto.is_empty() {
+            return Err("a mensagem está vazia".to_string());
+        }
+        let conversation = whatsapp::find_conversation(self.ctx.db().conn(), &request.conversa)
+            .map_err(|e| e.to_string())?
+            .ok_or("conversa não encontrada no hub")?;
+        let handle = self.ctx.whatsapp.get().ok_or(
+            "o WhatsApp não está conectado; peça ao usuário para abrir a aba WhatsApp no hub",
+        )?;
+        let approved = self
+            .confirm(
+                format!("Enviar mensagem para {}?", conversation.title()),
+                texto.clone(),
+            )
+            .await;
+        if !approved {
+            return Err("o usuário recusou ou não respondeu a tempo".to_string());
+        }
+        let sent = handle.send_text(&conversation.jid, &texto).await?;
+        let message = whatsapp::wire_to_message(&sent);
+        whatsapp::store_message(self.ctx.db().conn(), &message).map_err(|e| e.to_string())?;
+        self.ctx.events.publish(HubEvent::WhatsAppChanged);
+        Ok(format!("Mensagem enviada para {}", conversation.title()))
+    }
+
+    #[tool(
         description = "Toca um link do YouTube (vídeo ou playlist) só em áudio no player do hub"
     )]
     async fn player_tocar(
@@ -586,7 +668,7 @@ impl HubTools {
 impl ServerHandler for HubTools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Ferramentas do hub pessoal do usuário: agenda (tarefas, rotinas, lembretes), scripts, atalhos e player. Datas no fuso local.",
+            "Ferramentas do hub pessoal do usuário: agenda (tarefas, rotinas, lembretes), scripts, atalhos, player e WhatsApp. Datas no fuso local.",
         )
     }
 }

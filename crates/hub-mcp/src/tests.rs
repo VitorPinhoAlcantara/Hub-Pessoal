@@ -154,6 +154,8 @@ async fn lists_all_tools() {
         "scripts_criar",
         "scripts_executar",
         "scripts_listar",
+        "whatsapp_enviar",
+        "whatsapp_ler",
     ] {
         assert!(names.contains(&expected.to_string()), "faltou {expected}");
     }
@@ -356,5 +358,42 @@ async fn shortcuts_and_player_tools() {
         }
     }
     assert!(saw_play);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn whatsapp_read_uses_stored_messages_and_send_needs_open_tab() {
+    let fixture = fixture();
+    {
+        let db = fixture.ctx.db();
+        let wire = hub_core::whatsapp::WireMessage {
+            id: "1".into(),
+            jid: "ana@s.whatsapp.net".into(),
+            de: "ana@s.whatsapp.net".into(),
+            nome_de: "Ana".into(),
+            texto: "chego às 8".into(),
+            minha: false,
+            em: 1_792_627_000,
+            tipo: "texto".into(),
+            historico: false,
+        };
+        hub_core::whatsapp::store_message(db.conn(), &hub_core::whatsapp::wire_to_message(&wire))
+            .unwrap();
+        hub_core::whatsapp::set_alias(db.conn(), "ana@s.whatsapp.net", "Irmã").unwrap();
+    }
+    let client = client(&fixture.server, &fixture.server.token).await;
+    let read = call(&client, "whatsapp_ler", json!({ "conversa": "irmã" })).await;
+    assert!(!is_error(&read), "{}", result_text(&read));
+    assert!(result_text(&read).contains("chego às 8"));
+    let missing = call(&client, "whatsapp_ler", json!({ "conversa": "ninguém" })).await;
+    assert!(is_error(&missing));
+    let send = call(
+        &client,
+        "whatsapp_enviar",
+        json!({ "conversa": "Irmã", "texto": "ok" }),
+    )
+    .await;
+    assert!(is_error(&send));
+    assert!(result_text(&send).contains("aba WhatsApp"));
     client.cancel().await.unwrap();
 }
