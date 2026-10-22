@@ -219,3 +219,60 @@ pub fn confirm<'a, M: Clone + 'a>(
     .width(380)
     .into()
 }
+
+pub fn badge<'a, M: 'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, M> {
+    container(text(label).size(FONT_SIZE_SMALL))
+        .padding([1.0, units(2)])
+        .style(style::badge(color))
+        .into()
+}
+
+pub fn labeled<'a, M: 'a>(label: &'a str, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    iced::widget::column![small(label), content.into()]
+        .spacing(units(1))
+        .into()
+}
+
+pub fn choice<'a, M: Clone + 'a>(label: &'a str, active: bool, message: M) -> Element<'a, M> {
+    button(text(label).size(FONT_SIZE))
+        .padding([units(1) + 2.0, units(3)])
+        .style(style::toggle(active))
+        .on_press(message)
+        .into()
+}
+
+pub fn icon_label_button<'a, M: Clone + 'a>(
+    glyph: Icon,
+    label: &'a str,
+    on_press: Option<M>,
+) -> Button<'a, M> {
+    button(
+        row![
+            icon(glyph, ICON_SIZE - 4.0, TEXT_SECONDARY),
+            text(label).size(FONT_SIZE)
+        ]
+        .spacing(units(2))
+        .align_y(Alignment::Center),
+    )
+    .padding([units(2), units(3)])
+    .style(style::ghost)
+    .on_press_maybe(on_press)
+}
+
+pub fn primary_icon_button<'a, M: Clone + 'a>(
+    glyph: Icon,
+    label: &'a str,
+    on_press: Option<M>,
+) -> Button<'a, M> {
+    button(
+        row![
+            icon(glyph, ICON_SIZE - 4.0, BG_BASE),
+            text(label).size(FONT_SIZE)
+        ]
+        .spacing(units(2))
+        .align_y(Alignment::Center),
+    )
+    .padding([units(2), units(3)])
+    .style(style::primary)
+    .on_press_maybe(on_press)
+}

@@ -4,6 +4,13 @@ use crate::agenda::{self, Reminder};
 use crate::context::HubContext;
 use crate::events::HubEvent;
 use crate::platform::Notification;
+use crate::scripts::{self, Script};
+
+#[derive(Debug, Default)]
+pub struct Tick {
+    pub reminders: Vec<Reminder>,
+    pub scripts: Vec<Script>,
+}
 
 pub const ACTION_COMPLETE: &str = "concluir";
 pub const ACTION_SNOOZE: &str = "adiar";
@@ -22,8 +29,10 @@ pub fn startup(ctx: &HubContext) -> agenda::Result<Vec<Reminder>> {
     Ok(missed)
 }
 
-pub fn tick(ctx: &HubContext) -> agenda::Result<Vec<Reminder>> {
+pub fn tick(ctx: &HubContext) -> agenda::Result<Tick> {
     let now = ctx.clock.now();
+    let since = ctx.take_scheduler_mark(now);
+    let due_scripts = scripts::due_between(&ctx.scripts(), since, now);
     let db = ctx.db();
     let created = agenda::generate_routine_tasks(db.conn(), now.date(), now)?;
     let due = agenda::due_reminders(db.conn(), now)?;
@@ -37,17 +46,23 @@ pub fn tick(ctx: &HubContext) -> agenda::Result<Vec<Reminder>> {
     if created > 0 || !due.is_empty() {
         ctx.events.publish(HubEvent::AgendaChanged);
     }
-    Ok(due)
+    Ok(Tick {
+        reminders: due,
+        scripts: due_scripts,
+    })
 }
 
 pub fn next_wake(ctx: &HubContext) -> agenda::Result<NaiveDateTime> {
     let now = ctx.clock.now();
     let midnight = (now.date() + TimeDelta::days(1)).and_time(NaiveTime::MIN);
-    let next = agenda::next_reminder_time(ctx.db().conn())?;
-    Ok(match next {
-        Some(at) if at < midnight => at.max(now),
-        _ => midnight,
-    })
+    let reminder = agenda::next_reminder_time(ctx.db().conn())?;
+    let script = scripts::next_scheduled(&ctx.scripts(), now);
+    let next = [reminder, script, Some(midnight)]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(midnight);
+    Ok(next.max(now))
 }
 
 fn notify(ctx: &HubContext, reminder: &Reminder) {
@@ -158,11 +173,11 @@ mod tests {
     fn tick_fires_due_reminders_once() {
         let (ctx, platform, clock) = setup("2026-10-21 09:00");
         add_task(&ctx, "pagar conta", "2026-10-21 10:00");
-        assert!(tick(&ctx).unwrap().is_empty());
+        assert!(tick(&ctx).unwrap().reminders.is_empty());
         clock.advance(TimeDelta::hours(1));
         let fired = tick(&ctx).unwrap();
-        assert_eq!(fired.len(), 1);
-        assert!(tick(&ctx).unwrap().is_empty());
+        assert_eq!(fired.reminders.len(), 1);
+        assert!(tick(&ctx).unwrap().reminders.is_empty());
         let notifications = platform.notifications();
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].title, "pagar conta");
@@ -201,7 +216,7 @@ mod tests {
         assert!(platform.answer_notification(0, Some(ACTION_SNOOZE)));
         assert_eq!(next_wake(&ctx).unwrap(), at("2026-10-21 09:11"));
         clock.advance(TimeDelta::minutes(10));
-        assert_eq!(tick(&ctx).unwrap().len(), 1);
+        assert_eq!(tick(&ctx).unwrap().reminders.len(), 1);
         assert_eq!(platform.notifications().len(), 2);
     }
 
@@ -212,7 +227,42 @@ mod tests {
         let missed = startup(&ctx).unwrap();
         assert_eq!(missed.len(), 1);
         assert!(platform.notifications().is_empty());
-        assert!(tick(&ctx).unwrap().is_empty());
+        assert!(tick(&ctx).unwrap().reminders.is_empty());
+    }
+
+    #[test]
+    fn scheduled_scripts_are_due_once_and_drive_next_wake() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = HubPaths::from_home(temp.path());
+        paths.ensure_dirs().unwrap();
+        crate::scripts::create(
+            &paths.scripts_dir,
+            crate::scripts::NewScript {
+                name: "Backup".into(),
+                windows_file: Some("backup.ps1".into()),
+                linux_file: Some("backup.sh".into()),
+                schedule: Some("0 30 9 * * *".into()),
+                active: true,
+                ..crate::scripts::NewScript::default()
+            },
+        )
+        .unwrap();
+        let clock = Arc::new(FakeClock::at("2026-10-21 09:00"));
+        let ctx = HubContext::new(
+            paths,
+            Config::default(),
+            Database::open_in_memory().unwrap(),
+            Arc::new(FakePlatform::default()),
+            clock.clone(),
+        );
+        assert_eq!(next_wake(&ctx).unwrap(), at("2026-10-21 09:30"));
+        assert!(tick(&ctx).unwrap().scripts.is_empty());
+        clock.set(at("2026-10-21 09:30"));
+        let due = tick(&ctx).unwrap().scripts;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, "backup");
+        assert!(tick(&ctx).unwrap().scripts.is_empty());
+        assert_eq!(next_wake(&ctx).unwrap(), at("2026-10-22 00:00"));
     }
 
     #[test]

@@ -19,6 +19,75 @@ use super::{
 
 pub struct WindowsPlatform;
 
+struct WindowsMedia;
+
+fn media_error(error: windows::core::Error) -> PlatformError {
+    PlatformError::Launch {
+        target: "mídia do sistema".to_string(),
+        reason: error.message(),
+    }
+}
+
+fn current_media_session()
+-> Result<Option<windows::Media::Control::GlobalSystemMediaTransportControlsSession>, PlatformError>
+{
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Manager;
+    let manager = Manager::RequestAsync()
+        .and_then(|operation| operation.join())
+        .map_err(media_error)?;
+    Ok(manager.GetCurrentSession().ok())
+}
+
+impl MediaSession for WindowsMedia {
+    fn current(&self) -> Result<Option<super::MediaInfo>, PlatformError> {
+        use windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus;
+        let Some(session) = current_media_session()? else {
+            return Ok(None);
+        };
+        let properties = session
+            .TryGetMediaPropertiesAsync()
+            .and_then(|operation| operation.join())
+            .map_err(media_error)?;
+        let title = properties
+            .Title()
+            .map(|t| t.to_string_lossy())
+            .unwrap_or_default();
+        let artist = properties
+            .Artist()
+            .map(|a| a.to_string_lossy())
+            .ok()
+            .filter(|a| !a.is_empty());
+        let playing = session
+            .GetPlaybackInfo()
+            .and_then(|info| info.PlaybackStatus())
+            .map(|status| status == PlaybackStatus::Playing)
+            .unwrap_or(false);
+        if title.is_empty() && artist.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(super::MediaInfo {
+            title,
+            artist,
+            playing,
+        }))
+    }
+
+    fn send(&self, command: super::MediaCommand) -> Result<(), PlatformError> {
+        let Some(session) = current_media_session()? else {
+            return Err(PlatformError::Unsupported("nenhuma mídia tocando"));
+        };
+        let operation = match command {
+            super::MediaCommand::PlayPause => session.TryTogglePlayPauseAsync(),
+            super::MediaCommand::Next => session.TrySkipNextAsync(),
+            super::MediaCommand::Previous => session.TrySkipPreviousAsync(),
+        };
+        operation
+            .and_then(|operation| operation.join())
+            .map(|_| ())
+            .map_err(media_error)
+    }
+}
+
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -105,6 +174,26 @@ impl Platform for WindowsPlatform {
         Ok(dedup_apps(apps))
     }
 
+    fn run_command(&self, command: &str) -> Result<(), PlatformError> {
+        use std::os::windows::process::CommandExt;
+        let spec = super::shell_command(Os::Windows, command);
+        let mut process = spec.to_command();
+        process
+            .creation_flags(0x0800_0000)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let child = process.spawn().map_err(|error| PlatformError::Launch {
+            target: command.to_string(),
+            reason: error.to_string(),
+        })?;
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
     fn notify(
         &self,
         notification: Notification,
@@ -118,7 +207,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {
-        Err(PlatformError::Unsupported("sessão de mídia"))
+        Ok(Box::new(WindowsMedia))
     }
 
     fn is_fullscreen_app_running(&self) -> bool {

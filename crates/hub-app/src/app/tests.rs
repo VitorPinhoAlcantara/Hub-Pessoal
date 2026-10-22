@@ -137,3 +137,46 @@ fn view_builds_for_every_tab_and_panel() {
     let _ = app.update(Message::MaximizedChanged(true));
     let _ = app.view(id);
 }
+
+#[test]
+fn confirmation_request_reopens_window_and_answer_reaches_tool() {
+    let (mut app, _, _) = setup();
+    let id = open(&mut app);
+    let _ = app.update(Message::WindowClosed(id));
+    let (request_id, mut answer) =
+        app.ctx
+            .confirmations
+            .ask(&app.ctx.events, "Executar backup?", "pedido da IA");
+    let request = app.ctx.confirmations.pending()[0].clone();
+    let _ = app.update(Message::Bus(HubEvent::ConfirmationRequested(request)));
+    assert!(app.window.is_some());
+    assert_eq!(app.confirmations.len(), 1);
+    let window = app.window.unwrap();
+    let _ = app.view(window);
+    let _ = app.update(Message::ConfirmAnswered(request_id, true));
+    assert!(app.confirmations.is_empty());
+    assert_eq!(answer.try_recv(), Ok(true));
+}
+
+#[test]
+fn closed_confirmation_leaves_queue() {
+    let (mut app, _, _) = setup();
+    let (request_id, _answer) = app.ctx.confirmations.ask(&app.ctx.events, "x", "y");
+    let request = app.ctx.confirmations.pending()[0].clone();
+    let _ = app.update(Message::Bus(HubEvent::ConfirmationRequested(request)));
+    let _ = app.update(Message::Bus(HubEvent::ConfirmationClosed(request_id)));
+    assert!(app.confirmations.is_empty());
+}
+
+#[test]
+fn ai_panel_is_created_on_demand_without_mcp_in_tests() {
+    let (mut app, _, _) = setup();
+    assert!(app.chat.is_none());
+    assert!(app.mcp.is_err());
+    let id = open(&mut app);
+    let _ = app.update(Message::ToggleAi);
+    assert!(app.chat.is_some());
+    let _ = app.view(id);
+    let _ = app.update(Message::WindowClosed(id));
+    assert!(app.chat.is_none());
+}

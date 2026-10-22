@@ -6,3 +6,8 @@ publish = false
 
 [dependencies]
 hub-core.workspace = true
+hub-ui-kit.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

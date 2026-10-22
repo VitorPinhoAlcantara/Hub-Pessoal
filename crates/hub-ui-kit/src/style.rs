@@ -309,3 +309,46 @@ pub fn danger_solid(_theme: &Theme, status: button::Status) -> button::Style {
     };
     flat(Some(background), BG_BASE)
 }
+
+pub fn console(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb8(0x0C, 0x0D, 0x0F))),
+        text_color: Some(TEXT_PRIMARY),
+        border: border(BORDER_SUBTLE, 1.0, RADIUS_CONTROL),
+        ..container::Style::default()
+    }
+}
+
+pub fn badge(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(alpha(color, 0.14))),
+        text_color: Some(color),
+        border: border(alpha(color, 0.35), 1.0, 10.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn selectable(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let background = match (selected, status) {
+            (true, _) => BG_ELEVATED,
+            (false, button::Status::Hovered | button::Status::Pressed) => alpha(BG_ELEVATED, 0.6),
+            _ => BG_BASE,
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: TEXT_PRIMARY,
+            border: border(
+                if selected {
+                    alpha(ACCENT, 0.7)
+                } else {
+                    BORDER_SUBTLE
+                },
+                1.0,
+                RADIUS_CONTROL,
+            ),
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}

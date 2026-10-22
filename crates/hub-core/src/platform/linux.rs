@@ -9,6 +9,89 @@ use super::{
 
 pub struct LinuxPlatform;
 
+struct LinuxMedia;
+
+const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
+const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+
+fn media_error(error: impl std::fmt::Display) -> PlatformError {
+    PlatformError::Launch {
+        target: "mídia do sistema".to_string(),
+        reason: error.to_string(),
+    }
+}
+
+fn mpris_player(
+    connection: &zbus::blocking::Connection,
+) -> Result<Option<zbus::blocking::Proxy<'static>>, PlatformError> {
+    let dbus = zbus::blocking::fdo::DBusProxy::new(connection).map_err(media_error)?;
+    let names: Vec<String> = dbus
+        .list_names()
+        .map_err(media_error)?
+        .into_iter()
+        .map(|name| name.to_string())
+        .filter(|name| name.starts_with(MPRIS_PREFIX))
+        .collect();
+    let mut fallback = None;
+    for name in names {
+        let proxy =
+            zbus::blocking::Proxy::new_owned(connection.clone(), name, MPRIS_PATH, MPRIS_PLAYER)
+                .map_err(media_error)?;
+        let status: String = proxy.get_property("PlaybackStatus").unwrap_or_default();
+        if status == "Playing" {
+            return Ok(Some(proxy));
+        }
+        if fallback.is_none() {
+            fallback = Some(proxy);
+        }
+    }
+    Ok(fallback)
+}
+
+impl MediaSession for LinuxMedia {
+    fn current(&self) -> Result<Option<super::MediaInfo>, PlatformError> {
+        let connection = zbus::blocking::Connection::session().map_err(media_error)?;
+        let Some(player) = mpris_player(&connection)? else {
+            return Ok(None);
+        };
+        let status: String = player.get_property("PlaybackStatus").unwrap_or_default();
+        let mut metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+            player.get_property("Metadata").map_err(media_error)?;
+        let title = metadata
+            .remove("xesam:title")
+            .and_then(|value| String::try_from(value).ok())
+            .unwrap_or_default();
+        let artist = metadata
+            .remove("xesam:artist")
+            .and_then(|value| Vec::<String>::try_from(value).ok())
+            .and_then(|artists| artists.into_iter().next())
+            .filter(|artist| !artist.is_empty());
+        if title.is_empty() && artist.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(super::MediaInfo {
+            title,
+            artist,
+            playing: status == "Playing",
+        }))
+    }
+
+    fn send(&self, command: super::MediaCommand) -> Result<(), PlatformError> {
+        let connection = zbus::blocking::Connection::session().map_err(media_error)?;
+        let Some(player) = mpris_player(&connection)? else {
+            return Err(PlatformError::Unsupported("nenhuma mídia tocando"));
+        };
+        let method = match command {
+            super::MediaCommand::PlayPause => "PlayPause",
+            super::MediaCommand::Next => "Next",
+            super::MediaCommand::Previous => "Previous",
+        };
+        player.call_method(method, &()).map_err(media_error)?;
+        Ok(())
+    }
+}
+
 fn spawn_detached(program: &str, args: &[String]) -> Result<(), PlatformError> {
     let child = Command::new(program)
         .args(args)
@@ -140,6 +223,10 @@ impl Platform for LinuxPlatform {
         Ok(dedup_apps(apps))
     }
 
+    fn run_command(&self, command: &str) -> Result<(), PlatformError> {
+        spawn_detached("sh", &["-c".to_string(), command.to_string()])
+    }
+
     fn notify(
         &self,
         notification: Notification,
@@ -153,7 +240,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {
-        Err(PlatformError::Unsupported("sessão de mídia"))
+        Ok(Box::new(LinuxMedia))
     }
 
     fn is_fullscreen_app_running(&self) -> bool {

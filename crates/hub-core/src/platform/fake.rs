@@ -13,6 +13,7 @@ pub enum PlatformCall {
     OpenPath(PathBuf),
     OpenUrl(String),
     ListInstalledApps,
+    RunCommand(String),
     Notify(Notification),
     SpawnTray,
 }
@@ -124,6 +125,11 @@ impl Platform for FakePlatform {
     fn list_installed_apps(&self) -> Result<Vec<InstalledApp>, PlatformError> {
         self.record(PlatformCall::ListInstalledApps);
         Ok(self.apps.clone())
+    }
+
+    fn run_command(&self, command: &str) -> Result<(), PlatformError> {
+        self.record(PlatformCall::RunCommand(command.to_string()));
+        Ok(())
     }
 
     fn notify(

@@ -16,14 +16,19 @@ use hub_core::{Config, Database, HubContext, HubPaths};
 pub struct Options {
     pub smoke_test: bool,
     pub start_hidden: bool,
+    pub mcp: bool,
 }
 
 fn parse_options() -> Options {
-    let mut options = Options::default();
+    let mut options = Options {
+        mcp: true,
+        ..Options::default()
+    };
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--smoke-test" => options.smoke_test = true,
             "--bandeja" => options.start_hidden = true,
+            "--sem-mcp" => options.mcp = false,
             _ => {}
         }
     }

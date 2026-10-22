@@ -1,4 +1,5 @@
 use hub_core::config::Renderer;
+use hub_core::confirm::ConfirmRequest;
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, Section, style};
@@ -9,7 +10,6 @@ use iced::{Alignment, Element, Length, Padding, mouse};
 use crate::app::{App, Message, Tab};
 
 const EDGE: f32 = 5.0;
-const AI_PANEL_WIDTH: f32 = 340.0;
 const PLAYER_WIDTH: f32 = 300.0;
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -18,11 +18,50 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(style::base);
-    if app.maximized {
-        window.into()
-    } else {
-        stack![window, resize_edges()].into()
+    let mut layers = stack![window];
+    if let Some(request) = app.confirmations.first() {
+        layers = layers.push(confirmation(request, app.confirmations.len()));
     }
+    if !app.maximized {
+        layers = layers.push(resize_edges());
+    }
+    layers.into()
+}
+
+fn confirmation(request: &ConfirmRequest, pending: usize) -> Element<'_, Message> {
+    let mut content = column![
+        row![
+            icon(Icon::Ai, ICON_SIZE, ACCENT),
+            heading(request.title.as_str())
+        ]
+        .spacing(units(2))
+        .align_y(Alignment::Center),
+        muted(request.detail.as_str()),
+        small("Sem resposta em 60 segundos o pedido é recusado."),
+    ]
+    .spacing(units(3));
+    if pending > 1 {
+        content = content.push(small(format!("Mais {} pedidos na fila", pending - 1)));
+    }
+    content = content.push(
+        row![
+            space().width(Length::Fill),
+            ghost_button("Recusar", Some(Message::ConfirmAnswered(request.id, false))),
+            primary_button("Permitir", Some(Message::ConfirmAnswered(request.id, true))),
+        ]
+        .spacing(units(2)),
+    );
+    let dialog = container(content.width(400))
+        .padding(units(5))
+        .style(style::dialog);
+    opaque(
+        container(opaque(dialog))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(style::backdrop),
+    )
 }
 
 fn toolbar(app: &App) -> Element<'_, Message> {
@@ -114,26 +153,22 @@ fn main_area(app: &App) -> Element<'_, Message> {
             Some(agenda) => agenda.view().map(Message::Agenda),
             None => panel(muted("Carregando")).into(),
         },
-        Tab::Scripts => placeholder("Scripts", "A aba de scripts chega na Fase 2."),
-        Tab::Shortcuts => placeholder("Atalhos", "A aba de atalhos chega na Fase 2."),
+        Tab::Scripts => match &app.scripts {
+            Some(scripts) => scripts.view().map(Message::Scripts),
+            None => panel(muted("Carregando")).into(),
+        },
+        Tab::Shortcuts => match &app.shortcuts {
+            Some(shortcuts) => shortcuts.view().map(Message::Shortcuts),
+            None => panel(muted("Carregando")).into(),
+        },
         Tab::WhatsApp => placeholder("WhatsApp", "A aba do WhatsApp chega na Fase 5."),
         Tab::Settings => settings(app),
     };
     let mut panels = row![content].spacing(GAP_PANEL).height(Length::Fill);
-    if app.ai_open {
-        panels = panels.push(
-            container(
-                column![
-                    heading("Chat de IA"),
-                    muted("O chat com o Claude CLI chega na Fase 3."),
-                ]
-                .spacing(units(2)),
-            )
-            .padding(units(4))
-            .width(AI_PANEL_WIDTH)
-            .height(Length::Fill)
-            .style(style::panel),
-        );
+    if app.ai_open
+        && let Some(chat) = &app.chat
+    {
+        panels = panels.push(chat.view().map(Message::Chat));
     }
     let area = container(panels)
         .padding(Padding::default().right(GAP_PANEL).bottom(GAP_PANEL))
@@ -175,6 +210,10 @@ fn placeholder<'a>(name: &'a str, detail: &'a str) -> Element<'a, Message> {
     panel(column![title(name), muted(detail)].spacing(units(2))).into()
 }
 
+fn status(active: bool) -> String {
+    if active { "Ativa" } else { "Indisponível" }.to_string()
+}
+
 fn settings(app: &App) -> Element<'_, Message> {
     let config = app.ctx.config();
     let renderer = match config.general.renderer {
@@ -182,25 +221,27 @@ fn settings(app: &App) -> Element<'_, Message> {
         Renderer::Software => "Software (tiny-skia)",
     };
     let line = |label: &'static str, value: String| {
-        row![muted(label).width(200), body(value),].spacing(units(3))
+        row![muted(label).width(200), body(value)].spacing(units(3))
+    };
+    let mcp = match &app.mcp {
+        Ok(server) => server.url(),
+        Err(error) => format!("Desligado: {error}"),
     };
     panel(
         column![
             title("Configurações"),
-            muted("Por enquanto as opções são editadas em config.toml. A tela de edição chega nas próximas fases."),
+            muted("As opções ficam em config.toml e são recarregadas sozinhas quando o arquivo muda. O renderizador vale na próxima abertura."),
             space().height(units(2)),
             line("Renderizador", renderer.to_string()),
             line(
                 "Iniciar com o sistema",
                 if config.general.start_with_system { "Sim" } else { "Não" }.to_string()
             ),
-            line("Porta do MCP", config.mcp.port.to_string()),
+            line("Servidor MCP", mcp),
             line("Configuração", app.ctx.paths.config_file().display().to_string()),
             line("Dados", app.ctx.paths.data_dir.display().to_string()),
-            line(
-                "Bandeja",
-                if app.tray_available { "Ativa" } else { "Indisponível" }.to_string()
-            ),
+            line("Bandeja", status(app.tray_available)),
+            line("Recarga automática", status(app.watcher.is_some())),
         ]
         .spacing(units(2)),
     )

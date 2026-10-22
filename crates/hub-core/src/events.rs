@@ -1,11 +1,18 @@
 use tokio::sync::broadcast;
 
+use crate::confirm::ConfirmRequest;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HubEvent {
     AgendaChanged,
+    ScriptsChanged,
+    ShortcutsChanged,
     ConfigChanged,
     ShowWindow,
     QuitRequested,
+    ConfirmationRequested(ConfirmRequest),
+    ConfirmationClosed(u64),
+    PlayRequested(String),
 }
 
 #[derive(Clone)]

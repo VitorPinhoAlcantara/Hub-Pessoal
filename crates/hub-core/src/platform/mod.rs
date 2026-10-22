@@ -1,5 +1,6 @@
 pub mod desktop_entry;
 mod fake;
+pub mod ipc;
 mod notify;
 pub mod script;
 mod tray;
@@ -131,6 +132,7 @@ pub trait Platform: Send + Sync {
     fn open_path(&self, path: &Path) -> Result<(), PlatformError>;
     fn open_url(&self, url: &str) -> Result<(), PlatformError>;
     fn list_installed_apps(&self) -> Result<Vec<InstalledApp>, PlatformError>;
+    fn run_command(&self, command: &str) -> Result<(), PlatformError>;
     fn script_command(&self, script: &Path) -> Result<CommandSpec, PlatformError> {
         script_command_for(script, self.os())
     }
@@ -168,6 +170,24 @@ fn spawn_tray_thread(
             reason: "a thread da bandeja terminou sem responder".to_string(),
         })
     })
+}
+
+pub fn hide_console(command: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
+pub fn shell_command(os: Os, command: &str) -> CommandSpec {
+    match os {
+        Os::Windows => CommandSpec::new("cmd").arg("/C").arg(command),
+        Os::Linux => CommandSpec::new("sh").arg("-c").arg(command),
+    }
 }
 
 pub fn preferred_gpu_backend() -> Option<&'static str> {
