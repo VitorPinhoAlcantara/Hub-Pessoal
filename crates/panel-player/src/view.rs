@@ -115,7 +115,7 @@ fn controls(player: &Player, compact: bool) -> Element<'_, Message> {
 fn install_hint(os: Os) -> &'static str {
     match os {
         Os::Windows => {
-            "Instale com: winget install mpv e winget install yt-dlp (ou scoop install mpv yt-dlp)"
+            "Instale pelo terminal com: winget install --id shinchiro.mpv -e e winget install --id yt-dlp.yt-dlp -e. Depois reabra o hub."
         }
         Os::Linux => {
             "Instale com o gerenciador da distribuição, por exemplo: sudo apt install mpv yt-dlp"
@@ -181,63 +181,62 @@ fn expanded(player: &Player) -> Element<'_, Message> {
         );
     }
 
-    col = col.push(
-        row![
-            controls(player, false),
-            space().width(Length::Fill),
-            icon(Icon::Volume, ICON_SIZE - 4.0, TEXT_SECONDARY),
+    let mut control_row = row![controls(player, false), space().width(Length::Fill)]
+        .spacing(units(2))
+        .align_y(Alignment::Center);
+    if mpv {
+        control_row = control_row.push(icon(Icon::Volume, ICON_SIZE - 4.0, TEXT_SECONDARY));
+        control_row = control_row.push(
             slider(0.0..=100.0, player.status().volume, Message::VolumeChanged)
                 .step(1.0)
                 .width(110),
+        );
+    } else if player.system().is_some() {
+        control_row = control_row.push(small("Controlando a mídia do sistema"));
+    }
+    col = col.push(control_row);
+
+    col = col.push(
+        row![
+            text_field(
+                "Cole um link de vídeo ou playlist do YouTube",
+                player.url(),
+                Message::UrlChanged
+            )
+            .on_submit(Message::PlayInput),
+            button(icon(Icon::Play, ICON_SIZE - 4.0, BG_BASE))
+                .padding(units(2))
+                .style(style::primary)
+                .on_press_maybe((!player.url().trim().is_empty()).then_some(Message::PlayInput)),
         ]
         .spacing(units(2))
         .align_y(Alignment::Center),
     );
 
-    match player.tools() {
-        Some(tools) if !tools.ready() => {
-            let missing = match (tools.mpv.is_some(), tools.ytdlp.is_some()) {
-                (false, false) => "mpv e yt-dlp não encontrados",
-                (false, true) => "mpv não encontrado",
-                _ => "yt-dlp não encontrado",
-            };
-            col = col.push(
-                container(
-                    column![
-                        row![
-                            icon(Icon::Warning, ICON_SIZE - 4.0, WARNING),
-                            body(missing).color(WARNING)
-                        ]
-                        .spacing(units(2)),
-                        small(install_hint(player.os())),
+    if let Some(tools) = player.tools()
+        && !tools.ready()
+    {
+        let missing = match (tools.mpv.is_some(), tools.ytdlp.is_some()) {
+            (false, false) => "mpv e yt-dlp não encontrados",
+            (false, true) => "mpv não encontrado",
+            _ => "yt-dlp não encontrado",
+        };
+        col = col.push(
+            container(
+                column![
+                    row![
+                        icon(Icon::Warning, ICON_SIZE - 4.0, WARNING),
+                        body(missing).color(WARNING)
                     ]
-                    .spacing(units(1)),
-                )
-                .padding(units(3))
-                .width(Length::Fill)
-                .style(style::outlined(WARNING, false)),
-            );
-        }
-        _ => {
-            col = col.push(
-                row![
-                    text_field(
-                        "Link de vídeo ou playlist do YouTube",
-                        player.url(),
-                        Message::UrlChanged
-                    )
-                    .on_submit(Message::PlayInput),
-                    button(icon(Icon::Play, ICON_SIZE - 4.0, BG_BASE))
-                        .padding(units(2))
-                        .style(style::primary)
-                        .on_press_maybe(
-                            (!player.url().trim().is_empty()).then_some(Message::PlayInput)
-                        ),
+                    .spacing(units(2)),
+                    small(install_hint(player.os())),
                 ]
-                .spacing(units(2))
-                .align_y(Alignment::Center),
-            );
-        }
+                .spacing(units(1)),
+            )
+            .padding(units(3))
+            .width(Length::Fill)
+            .style(style::outlined(WARNING, false)),
+        );
     }
 
     for (message, color) in [(player.error(), DANGER), (player.notice(), TEXT_SECONDARY)] {

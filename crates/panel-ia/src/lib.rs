@@ -1,15 +1,18 @@
 pub mod provider;
 mod view;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use base64::Engine;
 use hub_core::HubContext;
-use hub_ui_kit::Section;
 use hub_ui_kit::iced::task::Handle;
-use hub_ui_kit::iced::widget::markdown;
-use hub_ui_kit::iced::{Element, Subscription, Task};
+use hub_ui_kit::iced::widget::text_editor::{self, Motion};
+use hub_ui_kit::iced::widget::{image, markdown};
+use hub_ui_kit::iced::{Element, Subscription, Task, clipboard};
+use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, dialog};
 
-pub use provider::{AiEvent, AiProvider, AiRequest, ClaudeCli};
+pub use provider::{AiEvent, AiProvider, AiRequest, ClaudeCli, ImageInput};
 
 pub const PROVIDERS: [(&str, bool); 3] = [
     ("Claude CLI", true),
@@ -17,8 +20,72 @@ pub const PROVIDERS: [(&str, bool); 3] = [
     ("API ou modelo local", false),
 ];
 
+pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: Arc<str>,
+    pub preview: image::Handle,
+}
+
+impl Attachment {
+    pub fn from_bytes(name: String, bytes: Vec<u8>) -> Result<Self, String> {
+        let media_type = media_type_of(&name)
+            .ok_or_else(|| format!("{name} não é uma imagem suportada (png, jpg, gif ou webp)"))?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(format!("{name} passa de 5 MB"));
+        }
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(Self {
+            name,
+            media_type: media_type.to_string(),
+            data: data.into(),
+            preview: image::Handle::from_bytes(bytes),
+        })
+    }
+
+    fn input(&self) -> ImageInput {
+        ImageInput {
+            media_type: self.media_type.clone(),
+            data: self.data.to_string(),
+        }
+    }
+}
+
+pub fn media_type_of(name: &str) -> Option<&'static str> {
+    let extension = Path::new(name)
+        .extension()?
+        .to_string_lossy()
+        .to_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+async fn load_attachment(path: PathBuf) -> Result<Attachment, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    media_type_of(&name)
+        .ok_or_else(|| format!("{name} não é uma imagem suportada (png, jpg, gif ou webp)"))?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("falha ao ler {name}: {error}"))?;
+    Attachment::from_bytes(name, bytes)
+}
+
 pub enum Item {
-    User(String),
+    User {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     Assistant {
         raw: String,
         content: markdown::Content,
@@ -41,26 +108,50 @@ impl Item {
             content: markdown::Content::new(),
         }
     }
+
+    pub fn copy_text(&self) -> String {
+        match self {
+            Item::User { text, .. } => text.clone(),
+            Item::Assistant { raw, .. } => raw.clone(),
+            Item::Tool { output, input, .. } => output.clone().unwrap_or_else(|| input.clone()),
+            Item::Notice(text) | Item::Error(text) => text.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     InputChanged(String),
+    InputEdited(text_editor::Action),
     Send,
     Event(AiEvent),
     Finished,
     Cancel,
     NewConversation,
     LinkClicked(markdown::Uri),
+    Copy(usize),
+    EditResend(usize),
+    ItemMenu(usize),
+    MenuClosed,
+    AttachImages,
+    FilesPicked(Vec<PathBuf>),
+    FileDropped(PathBuf),
+    AttachmentLoaded(Result<Attachment, String>),
+    RemoveAttachment(usize),
 }
 
 pub struct Chat {
     ctx: HubContext,
     provider: Arc<dyn AiProvider>,
     items: Vec<Item>,
-    input: String,
+    composer: text_editor::Content,
+    attachments: Vec<Attachment>,
     session: Option<String>,
     running: Option<Handle>,
+    cancelled: Option<usize>,
+    copied: Option<usize>,
+    menu: Option<ContextMenu<Message>>,
+    width: f32,
 }
 
 pub fn short_tool_name(name: &str) -> &str {
@@ -73,18 +164,47 @@ impl Chat {
             ctx,
             provider,
             items: Vec::new(),
-            input: String::new(),
+            composer: text_editor::Content::new(),
+            attachments: Vec::new(),
             session: None,
             running: None,
+            cancelled: None,
+            copied: None,
+            menu: None,
+            width: view::PANEL_WIDTH,
         }
+    }
+
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn set_width(&mut self, width: f32) {
+        self.width = width;
     }
 
     pub fn items(&self) -> &[Item] {
         &self.items
     }
 
-    pub fn input(&self) -> &str {
-        &self.input
+    pub fn input(&self) -> String {
+        self.composer.text()
+    }
+
+    pub fn composer(&self) -> &text_editor::Content {
+        &self.composer
+    }
+
+    pub fn attachments(&self) -> &[Attachment] {
+        &self.attachments
+    }
+
+    pub fn cancelled(&self) -> Option<usize> {
+        self.cancelled
+    }
+
+    pub fn copied(&self) -> Option<usize> {
+        self.copied
     }
 
     pub fn session(&self) -> Option<&str> {
@@ -95,8 +215,75 @@ impl Chat {
         self.running.is_some()
     }
 
+    pub fn can_send(&self) -> bool {
+        self.running.is_none()
+            && (!self.composer.text().trim().is_empty() || !self.attachments.is_empty())
+    }
+
     pub fn provider_label(&self) -> &'static str {
         self.provider.label()
+    }
+
+    fn set_input(&mut self, text: &str) {
+        self.composer = text_editor::Content::with_text(text);
+        self.composer
+            .perform(text_editor::Action::Move(Motion::DocumentEnd));
+    }
+
+    fn send(&mut self) -> Task<Message> {
+        if !self.can_send() {
+            return Task::none();
+        }
+        let prompt = self.composer.text().trim().to_string();
+        let attachments = std::mem::take(&mut self.attachments);
+        self.composer = text_editor::Content::new();
+        self.cancelled = None;
+        self.copied = None;
+        let images = attachments.iter().map(Attachment::input).collect();
+        self.items.push(Item::User {
+            text: prompt.clone(),
+            attachments,
+        });
+        let stream = self.provider.send(AiRequest {
+            prompt,
+            images,
+            session: self.session.clone(),
+        });
+        let (task, handle) = Task::run(stream, Message::Event)
+            .chain(Task::done(Message::Finished))
+            .abortable();
+        self.running = Some(handle);
+        task
+    }
+
+    fn edit_resend(&mut self, index: usize) {
+        if self.running.is_some() {
+            return;
+        }
+        let Some(Item::User { text, attachments }) = self.items.get(index) else {
+            return;
+        };
+        let text = text.clone();
+        self.attachments = attachments.clone();
+        self.set_input(&text);
+        self.items.truncate(index);
+        self.cancelled = None;
+        self.copied = None;
+    }
+
+    fn item_menu(&self, index: usize) -> Option<ContextMenu<Message>> {
+        let item = self.items.get(index)?;
+        let mut items = vec![MenuItem::new("Copiar texto", Message::Copy(index)).icon(Icon::Copy)];
+        if matches!(item, Item::User { .. }) {
+            let edit =
+                MenuItem::new("Editar e reenviar", Message::EditResend(index)).icon(Icon::Edit);
+            items.push(if self.running.is_some() {
+                edit.disabled()
+            } else {
+                edit
+            });
+        }
+        Some(ContextMenu::at_cursor(items, Message::MenuClosed))
     }
 
     fn push_text(&mut self, text: &str) {
@@ -167,29 +354,18 @@ impl Section for Chat {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::InputChanged(text) => self.input = text,
-            Message::Send => {
-                let prompt = self.input.trim().to_string();
-                if prompt.is_empty() || self.running.is_some() {
-                    return Task::none();
-                }
-                self.input.clear();
-                self.items.push(Item::User(prompt.clone()));
-                let stream = self.provider.send(AiRequest {
-                    prompt,
-                    session: self.session.clone(),
-                });
-                let (task, handle) = Task::run(stream, Message::Event)
-                    .chain(Task::done(Message::Finished))
-                    .abortable();
-                self.running = Some(handle);
-                return task;
-            }
+            Message::InputChanged(text) => self.set_input(&text),
+            Message::InputEdited(action) => self.composer.perform(action),
+            Message::Send => return self.send(),
             Message::Event(event) => self.apply(event),
             Message::Finished => self.running = None,
             Message::Cancel => {
                 if let Some(handle) = self.running.take() {
                     handle.abort();
+                    self.cancelled = self
+                        .items
+                        .iter()
+                        .rposition(|item| matches!(item, Item::User { .. }));
                     self.items
                         .push(Item::Notice("Resposta cancelada".to_string()));
                 }
@@ -200,10 +376,46 @@ impl Section for Chat {
                 }
                 self.items.clear();
                 self.session = None;
+                self.cancelled = None;
+                self.copied = None;
+                self.menu = None;
             }
             Message::LinkClicked(uri) => {
                 if let Err(error) = self.ctx.platform.open_url(uri.as_str()) {
                     self.items.push(Item::Error(error.to_string()));
+                }
+            }
+            Message::Copy(index) => {
+                self.menu = None;
+                if let Some(item) = self.items.get(index) {
+                    self.copied = Some(index);
+                    return clipboard::write(item.copy_text());
+                }
+            }
+            Message::EditResend(index) => {
+                self.menu = None;
+                self.edit_resend(index);
+            }
+            Message::ItemMenu(index) => self.menu = self.item_menu(index),
+            Message::MenuClosed => self.menu = None,
+            Message::AttachImages => {
+                return Task::perform(dialog::pick_images(), Message::FilesPicked);
+            }
+            Message::FilesPicked(paths) => {
+                return Task::batch(
+                    paths.into_iter().map(|path| {
+                        Task::perform(load_attachment(path), Message::AttachmentLoaded)
+                    }),
+                );
+            }
+            Message::FileDropped(path) => {
+                return Task::perform(load_attachment(path), Message::AttachmentLoaded);
+            }
+            Message::AttachmentLoaded(Ok(attachment)) => self.attachments.push(attachment),
+            Message::AttachmentLoaded(Err(error)) => self.items.push(Item::Error(error)),
+            Message::RemoveAttachment(index) => {
+                if index < self.attachments.len() {
+                    self.attachments.remove(index);
                 }
             }
         }
@@ -222,6 +434,11 @@ impl Section for Chat {
         if let Some(handle) = self.running.take() {
             handle.abort();
         }
+        self.menu = None;
+    }
+
+    fn context_menu(&self) -> Option<ContextMenu<Message>> {
+        self.menu.clone()
     }
 }
 

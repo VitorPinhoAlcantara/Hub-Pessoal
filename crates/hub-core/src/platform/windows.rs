@@ -13,9 +13,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-    ActionHandler, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
-    TrayHandler, TrayImage, collect_files, dedup_apps,
+    ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
+    TrayHandler, TrayImage, bgra_to_rgba, collect_files, dedup_apps, find_in_path,
 };
+
+const ICON_PIXELS: i32 = 48;
 
 pub struct WindowsPlatform;
 
@@ -32,9 +34,16 @@ fn current_media_session()
 -> Result<Option<windows::Media::Control::GlobalSystemMediaTransportControlsSession>, PlatformError>
 {
     use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Manager;
-    let manager = Manager::RequestAsync()
-        .and_then(|operation| operation.join())
-        .map_err(media_error)?;
+    static MANAGER: std::sync::OnceLock<Manager> = std::sync::OnceLock::new();
+    let manager = match MANAGER.get() {
+        Some(manager) => manager,
+        None => {
+            let manager = Manager::RequestAsync()
+                .and_then(|operation| operation.join())
+                .map_err(media_error)?;
+            MANAGER.get_or_init(|| manager)
+        }
+    };
     Ok(manager.GetCurrentSession().ok())
 }
 
@@ -142,6 +151,115 @@ fn is_uninstaller(name: &str) -> bool {
     lower.contains("uninstall") || lower.contains("desinstalar")
 }
 
+fn path_extensions() -> Vec<String> {
+    std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|ext| !ext.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn resolve_target(target: &Path) -> Option<PathBuf> {
+    if target.exists() {
+        return Some(target.to_path_buf());
+    }
+    let name = target.to_str()?;
+    let path_var = std::env::var_os("PATH")?;
+    find_in_path(name, &path_var, &path_extensions())
+}
+
+struct ComScope(bool);
+
+impl ComScope {
+    fn enter() -> Self {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        Self(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok())
+    }
+}
+
+impl Drop for ComScope {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+fn shell_icon(path: &Path) -> Option<FileIcon> {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::DeleteObject;
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY,
+    };
+    use windows::core::PCWSTR;
+    let _com = ComScope::enter();
+    let name = wide(path.as_os_str());
+    let factory: IShellItemImageFactory =
+        unsafe { SHCreateItemFromParsingName(PCWSTR(name.as_ptr()), None) }.ok()?;
+    let size = SIZE {
+        cx: ICON_PIXELS,
+        cy: ICON_PIXELS,
+    };
+    let bitmap = unsafe { factory.GetImage(size, SIIGBF_ICONONLY) }.ok()?;
+    let icon = bitmap_pixels(bitmap);
+    unsafe {
+        let _ = DeleteObject(bitmap.into());
+    }
+    icon
+}
+
+fn bitmap_pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<FileIcon> {
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        GetDIBits, GetObjectW,
+    };
+    let mut info = BITMAP::default();
+    let read = unsafe {
+        GetObjectW(
+            bitmap.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some((&mut info as *mut BITMAP).cast()),
+        )
+    };
+    if read == 0 || info.bmWidth <= 0 || info.bmHeight == 0 {
+        return None;
+    }
+    let width = info.bmWidth;
+    let height = info.bmHeight.abs();
+    let mut header = BITMAPINFO::default();
+    header.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    header.bmiHeader.biWidth = width;
+    header.bmiHeader.biHeight = -height;
+    header.bmiHeader.biPlanes = 1;
+    header.bmiHeader.biBitCount = 32;
+    header.bmiHeader.biCompression = BI_RGB.0;
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    let lines = unsafe {
+        let dc = CreateCompatibleDC(None);
+        let lines = GetDIBits(
+            dc,
+            bitmap,
+            0,
+            height as u32,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut header,
+            DIB_RGB_COLORS,
+        );
+        let _ = DeleteDC(dc);
+        lines
+    };
+    if lines <= 0 {
+        return None;
+    }
+    bgra_to_rgba(&mut pixels);
+    Some(FileIcon::Rgba {
+        width: width as u32,
+        height: height as u32,
+        pixels,
+    })
+}
+
 impl Platform for WindowsPlatform {
     fn os(&self) -> Os {
         Os::Windows
@@ -172,6 +290,30 @@ impl Platform for WindowsPlatform {
             })
             .collect();
         Ok(dedup_apps(apps))
+    }
+
+    fn file_icon(&self, target: &Path) -> Option<FileIcon> {
+        shell_icon(&resolve_target(target)?)
+    }
+
+    fn reveal_path(&self, target: &Path) -> Result<(), PlatformError> {
+        use std::os::windows::process::CommandExt;
+        let path = resolve_target(target).ok_or_else(|| PlatformError::Launch {
+            target: target.to_string_lossy().into_owned(),
+            reason: "arquivo não encontrado".to_string(),
+        })?;
+        let child = std::process::Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map_err(|error| PlatformError::Launch {
+                target: path.to_string_lossy().into_owned(),
+                reason: error.to_string(),
+            })?;
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
+        Ok(())
     }
 
     fn run_command(&self, command: &str) -> Result<(), PlatformError> {
@@ -251,6 +393,44 @@ mod tests {
         for dir in start_menu_dirs() {
             assert!(dir.ends_with("Programs"));
         }
+    }
+
+    #[test]
+    fn commands_are_resolved_through_path() {
+        let resolved = resolve_target(Path::new("cmd")).unwrap();
+        assert!(
+            resolved
+                .to_string_lossy()
+                .to_lowercase()
+                .ends_with("cmd.exe")
+        );
+        assert!(resolve_target(Path::new("programa-que-nao-existe-123")).is_none());
+    }
+
+    #[test]
+    fn system_executable_has_icon() {
+        let root = std::env::var_os("SystemRoot").unwrap();
+        let explorer = PathBuf::from(root).join("explorer.exe");
+        let Some(FileIcon::Rgba {
+            width,
+            height,
+            pixels,
+        }) = WindowsPlatform.file_icon(&explorer)
+        else {
+            panic!("esperava o ícone do explorer");
+        };
+        assert!(width > 0 && height > 0);
+        assert_eq!(pixels.len(), (width * height * 4) as usize);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+    }
+
+    #[test]
+    fn missing_file_has_no_icon() {
+        assert!(
+            WindowsPlatform
+                .file_icon(Path::new("Z:\\nada\\aqui.exe"))
+                .is_none()
+        );
     }
 
     #[test]

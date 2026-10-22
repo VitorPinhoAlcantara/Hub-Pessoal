@@ -416,6 +416,109 @@ pub fn delete_routine(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Projection {
+    pub date: NaiveDate,
+    pub routine: Routine,
+}
+
+pub fn routine_projections(
+    conn: &Connection,
+    from: NaiveDate,
+    to: NaiveDate,
+    today: NaiveDate,
+) -> Result<Vec<Projection>> {
+    let start = from.max(today + TimeDelta::days(1));
+    let mut projections = Vec::new();
+    if start > to {
+        return Ok(projections);
+    }
+    for routine in list_routines(conn)?.into_iter().filter(|r| r.active) {
+        for date in start.iter_days().take_while(|d| *d <= to) {
+            if !routine.recurrence.occurs_on(date) {
+                continue;
+            }
+            let exists: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM tarefas WHERE rotina_id = ?1 AND data = ?2",
+                    params![routine.id, date],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                projections.push(Projection {
+                    date,
+                    routine: routine.clone(),
+                });
+            }
+        }
+    }
+    projections.sort_by_key(|p| (p.date, p.routine.time.is_some(), p.routine.time));
+    Ok(projections)
+}
+
+pub fn get_routine(conn: &Connection, id: i64) -> Result<Routine> {
+    list_routines(conn)?
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or(AgendaError::NotFound(id))
+}
+
+pub fn update_routine(conn: &Connection, id: i64, routine: NewRoutine) -> Result<Routine> {
+    let title = routine.title.trim();
+    if title.is_empty() {
+        return Err(AgendaError::EmptyTitle);
+    }
+    let changed = conn.execute(
+        "UPDATE rotinas SET titulo = ?2, notas = ?3, recorrencia = ?4, hora = ?5 WHERE id = ?1",
+        params![
+            id,
+            title,
+            routine.notes,
+            routine.recurrence.to_string(),
+            routine.time
+        ],
+    )?;
+    if changed == 0 {
+        return Err(AgendaError::NotFound(id));
+    }
+    get_routine(conn, id)
+}
+
+pub fn move_task(conn: &Connection, id: i64, date: Option<NaiveDate>) -> Result<Task> {
+    let task = get_task(conn, id)?;
+    update_task(
+        conn,
+        id,
+        NewTask {
+            title: task.title,
+            notes: task.notes,
+            date,
+            time: task.time,
+            priority: task.priority,
+        },
+    )
+}
+
+pub fn move_reminder(
+    conn: &Connection,
+    id: i64,
+    date: NaiveDate,
+    now: NaiveDateTime,
+) -> Result<Reminder> {
+    let reminder = get_reminder(conn, id)?;
+    let at = date.and_time(reminder.effective_time().time());
+    update_reminder(conn, id, &reminder.title, &reminder.notes, at, now)
+}
+
+pub fn pending_reminders(conn: &Connection) -> Result<Vec<Reminder>> {
+    query_reminders(
+        conn,
+        "l.disparado_em IS NULL ORDER BY COALESCE(l.adiado_ate, l.dispara_em), l.id",
+        [],
+    )
+}
+
 pub fn generate_routine_tasks(
     conn: &Connection,
     today: NaiveDate,

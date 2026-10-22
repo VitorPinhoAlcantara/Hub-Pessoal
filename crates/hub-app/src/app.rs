@@ -5,14 +5,17 @@ use hub_core::agenda::Reminder;
 use hub_core::chrono::NaiveDateTime;
 use hub_core::confirm::ConfirmRequest;
 use hub_core::events::HubEvent;
-use hub_core::platform::{TrayEvent, TrayImage};
+use hub_core::platform::{MediaCommand, TrayEvent, TrayImage};
+use hub_core::player::PlayerCommand;
 use hub_core::scheduler;
 use hub_core::scripts::Origin;
 use hub_core::scripts::runner::{self, RunEvent};
 use hub_core::watcher::{self, ConfigWatcher};
-use hub_ui_kit::{Section, style};
+use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, style};
+use iced::keyboard::{self, Modifiers};
 use iced::window::{self, Direction};
 use iced::{Element, Size, Subscription, Task, Theme};
+use iced::{Event, Point, event, mouse};
 use section_agenda::Agenda;
 use section_atalhos::Shortcuts;
 use section_scripts::Scripts;
@@ -66,6 +69,13 @@ pub enum Message {
     Chat(panel_ia::Message),
     Player(panel_player::Message),
     ConfirmAnswered(u64, bool),
+    Zoom(i32),
+    ZoomReset,
+    AppearanceMenu,
+    MenuClosed,
+    ChatResizeStart,
+    ChatResizeMove(Point),
+    ChatResizeEnd,
     DragWindow,
     ResizeWindow(Direction),
     Minimize,
@@ -99,6 +109,10 @@ pub struct App {
     pub player_open: bool,
     pub tray_available: bool,
     pub watcher: Option<ConfigWatcher>,
+    pub zoom: f32,
+    pub chat_width: f32,
+    pub resizing_chat: bool,
+    pub toolbar_menu: Option<ContextMenu<Message>>,
 }
 
 pub fn run(ctx: HubContext, options: Options) -> iced::Result {
@@ -110,6 +124,7 @@ pub fn run(ctx: HubContext, options: Options) -> iced::Result {
     .title(App::title)
     .theme(App::theme)
     .subscription(App::subscription)
+    .scale_factor(App::scale_factor)
     .settings(iced::Settings {
         default_text_size: hub_ui_kit::tokens::FONT_SIZE.into(),
         default_font: hub_ui_kit::font::UI,
@@ -158,6 +173,7 @@ impl App {
         } else {
             Err("desligado".to_string())
         };
+        let appearance = ctx.config().appearance;
         let mut app = Self {
             ctx,
             options,
@@ -178,6 +194,10 @@ impl App {
             player_open: false,
             tray_available,
             watcher,
+            zoom: appearance.clamped_zoom(),
+            chat_width: appearance.clamped_chat_width(),
+            resizing_chat: false,
+            toolbar_menu: None,
         };
         let task = if options.start_hidden && app.tray_available {
             Task::none()
@@ -266,6 +286,20 @@ impl App {
         self.ensure_section(tab);
     }
 
+    fn save_appearance(&mut self) {
+        let mut config = self.ctx.config();
+        config.appearance.zoom = self.zoom;
+        config.appearance.chat_width = self.chat_width;
+        if let Err(error) = config.save(&self.ctx.paths.config_file()) {
+            tracing::warn!(%error, "falha ao salvar a aparência");
+        }
+        *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
+    }
+
+    pub fn scale_factor(&self, _window: window::Id) -> f32 {
+        self.zoom
+    }
+
     fn ensure_player(&mut self) -> Task<Message> {
         if self.player.is_some() {
             return Task::none();
@@ -273,6 +307,39 @@ impl App {
         let (player, task) = Player::new(self.ctx.clone());
         self.player = Some(player);
         task.map(Message::Player)
+    }
+
+    fn player_control(&mut self, command: PlayerCommand) -> Task<Message> {
+        use panel_player::Message as P;
+        let boot = self.ensure_player();
+        let Some(player) = &mut self.player else {
+            return boot;
+        };
+        let mpv = player.is_active();
+        let paused = player.status().paused;
+        let playing = player.system().map(|media| media.playing);
+        let system = |command| Some(P::SystemCommand(command));
+        let message = match command {
+            PlayerCommand::TogglePause if mpv => Some(P::TogglePause),
+            PlayerCommand::Pause if mpv => (!paused).then_some(P::TogglePause),
+            PlayerCommand::Resume if mpv => paused.then_some(P::TogglePause),
+            PlayerCommand::Next if mpv => Some(P::Next),
+            PlayerCommand::Previous if mpv => Some(P::Previous),
+            PlayerCommand::TogglePause => system(MediaCommand::PlayPause),
+            PlayerCommand::Pause if playing == Some(true) => system(MediaCommand::PlayPause),
+            PlayerCommand::Resume if playing == Some(false) => system(MediaCommand::PlayPause),
+            PlayerCommand::Next => system(MediaCommand::Next),
+            PlayerCommand::Previous => system(MediaCommand::Previous),
+            PlayerCommand::SetVolume(volume) => Some(P::VolumeChanged(f64::from(volume))),
+            PlayerCommand::Stop if mpv => Some(P::Stop),
+            PlayerCommand::FavoritesChanged => Some(P::FavoritesReload),
+            PlayerCommand::Pause | PlayerCommand::Resume | PlayerCommand::Stop => None,
+        };
+        let task = match message {
+            Some(message) => player.update(message).map(Message::Player),
+            None => Task::none(),
+        };
+        Task::batch([boot, task])
     }
 
     fn sync_player_visibility(&mut self) {
@@ -290,7 +357,9 @@ impl App {
                 .ok()
                 .map(|_| hub_mcp::client_config_path(&self.ctx));
             let provider = ClaudeCli::new(self.ctx.paths.data_dir.clone(), config);
-            self.chat = Some(Chat::new(self.ctx.clone(), Arc::new(provider)));
+            let mut chat = Chat::new(self.ctx.clone(), Arc::new(provider));
+            chat.set_width(self.chat_width);
+            self.chat = Some(chat);
         }
     }
 
@@ -388,6 +457,58 @@ impl App {
                     return chat.update(message).map(Message::Chat);
                 }
             }
+            Message::Zoom(steps) => {
+                let mut appearance = self.ctx.config().appearance;
+                appearance.zoom = self.zoom;
+                appearance.step_zoom(steps);
+                self.zoom = appearance.clamped_zoom();
+                self.toolbar_menu = None;
+                self.save_appearance();
+            }
+            Message::ZoomReset => {
+                self.zoom = 1.0;
+                self.toolbar_menu = None;
+                self.save_appearance();
+            }
+            Message::AppearanceMenu => {
+                let percent = (self.zoom * 100.0).round() as i32;
+                let at = Point::new(
+                    hub_ui_kit::cursor::position().x,
+                    hub_ui_kit::tokens::TOOLBAR_HEIGHT,
+                );
+                self.toolbar_menu = Some(ContextMenu::new(
+                    at,
+                    vec![
+                        MenuItem::new("Aumentar zoom", Message::Zoom(1))
+                            .icon(Icon::Plus)
+                            .shortcut("Ctrl +"),
+                        MenuItem::new("Diminuir zoom", Message::Zoom(-1))
+                            .icon(Icon::Minimize)
+                            .shortcut("Ctrl -"),
+                        MenuItem::new(format!("Restaurar zoom ({percent}%)"), Message::ZoomReset)
+                            .icon(Icon::Refresh)
+                            .shortcut("Ctrl 0"),
+                    ],
+                    Message::MenuClosed,
+                ));
+            }
+            Message::MenuClosed => self.toolbar_menu = None,
+            Message::ChatResizeStart => self.resizing_chat = true,
+            Message::ChatResizeMove(position) => {
+                let viewport = hub_ui_kit::cursor::viewport();
+                let width = viewport.width - position.x - hub_ui_kit::tokens::GAP_PANEL;
+                self.chat_width = width.clamp(
+                    hub_core::config::CHAT_WIDTH_MIN,
+                    hub_core::config::CHAT_WIDTH_MAX.min(viewport.width * 0.7),
+                );
+                if let Some(chat) = &mut self.chat {
+                    chat.set_width(self.chat_width);
+                }
+            }
+            Message::ChatResizeEnd => {
+                self.resizing_chat = false;
+                self.save_appearance();
+            }
             Message::ConfirmAnswered(id, approved) => {
                 self.ctx.confirmations.answer(id, approved);
                 self.confirmations.retain(|c| c.id != id);
@@ -476,6 +597,7 @@ impl App {
                 };
                 return Task::batch([boot, play]);
             }
+            HubEvent::PlayerControl(command) => return self.player_control(command),
             HubEvent::WhatsAppChanged => {
                 if let Some(whatsapp) = &mut self.whatsapp {
                     return whatsapp
@@ -534,6 +656,13 @@ impl App {
         }
         if self.window.is_some() {
             subscriptions.push(window::close_requests().map(Message::CloseRequested));
+            subscriptions.push(event::listen_with(shortcut_keys));
+            if self.resizing_chat {
+                subscriptions.push(event::listen_with(resize_events));
+            }
+            if self.ai_open {
+                subscriptions.push(event::listen_with(file_drops));
+            }
             let section = match self.tab {
                 Tab::Agenda => self
                     .agenda
@@ -556,6 +685,41 @@ impl App {
             subscriptions.extend(section);
         }
         Subscription::batch(subscriptions)
+    }
+}
+
+fn shortcut_keys(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    if !modifiers.contains(Modifiers::CTRL) {
+        return None;
+    }
+    match key.as_ref() {
+        keyboard::Key::Character("+" | "=") => Some(Message::Zoom(1)),
+        keyboard::Key::Character("-" | "_") => Some(Message::Zoom(-1)),
+        keyboard::Key::Character("0") => Some(Message::ZoomReset),
+        _ => None,
+    }
+}
+
+fn file_drops(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    match event {
+        Event::Window(window::Event::FileDropped(path)) => {
+            Some(Message::Chat(panel_ia::Message::FileDropped(path)))
+        }
+        _ => None,
+    }
+}
+
+fn resize_events(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::ChatResizeMove(position))
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        | Event::Mouse(mouse::Event::CursorLeft) => Some(Message::ChatResizeEnd),
+        _ => None,
     }
 }
 

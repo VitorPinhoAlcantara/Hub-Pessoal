@@ -61,6 +61,11 @@ icons! {
     Users => "users",
     Refresh => "refresh",
     Tool => "tool",
+    Copy => "copy",
+    Attach => "attach",
+    Image => "image",
+    External => "external",
+    Terminal => "terminal",
 }
 
 static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| {

@@ -32,6 +32,10 @@ pub enum ScriptError {
     NoFile,
     #[error("agendamento inválido: {0}")]
     InvalidSchedule(String),
+    #[error("nome de arquivo inválido: {0}")]
+    InvalidFileName(String),
+    #[error("o script não tem arquivo para este sistema")]
+    NoFileForOs,
 }
 
 pub type Result<T> = std::result::Result<T, ScriptError>;
@@ -287,6 +291,46 @@ pub fn save_meta(script: &Script, meta: &ScriptMeta) -> Result<()> {
         parse_schedule(schedule)?;
     }
     std::fs::write(&script.meta_path, toml::to_string_pretty(meta)?)?;
+    Ok(())
+}
+
+pub fn validate_file_name(name: &str) -> Result<()> {
+    let name = name.trim();
+    let plain = !name.is_empty()
+        && !name.contains(['/', '\\', ':'])
+        && name != "."
+        && name != ".."
+        && !name.to_ascii_lowercase().ends_with(".toml");
+    if plain {
+        Ok(())
+    } else {
+        Err(ScriptError::InvalidFileName(name.to_string()))
+    }
+}
+
+pub fn code_path(dir: &Path, meta: &ScriptMeta, os: Os) -> Result<PathBuf> {
+    let name = meta.file.for_os(os).ok_or(ScriptError::NoFileForOs)?;
+    validate_file_name(name)?;
+    Ok(dir.join(name.trim()))
+}
+
+pub fn read_code(dir: &Path, meta: &ScriptMeta, os: Os) -> Result<Option<String>> {
+    let path = match code_path(dir, meta, os) {
+        Ok(path) => path,
+        Err(ScriptError::NoFileForOs) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn write_code(dir: &Path, meta: &ScriptMeta, os: Os, content: &str) -> Result<()> {
+    let path = code_path(dir, meta, os)?;
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(path, content)?;
     Ok(())
 }
 

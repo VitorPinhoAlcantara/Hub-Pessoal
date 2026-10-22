@@ -12,7 +12,9 @@ use hub_ui_kit::iced::{Element, Subscription, Task, time};
 
 pub use mpv::{Command, Entry, MpvEvent, MpvProcess, Property, Tools};
 
-pub const SYSTEM_REFRESH: Duration = Duration::from_secs(2);
+pub const SYSTEM_REFRESH: Duration = Duration::from_millis(1500);
+pub const SYSTEM_SETTLE: Duration = Duration::from_millis(350);
+pub const NO_MEDIA: &str = "nenhuma mídia tocando";
 pub const DEFAULT_VOLUME: f64 = 70.0;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -44,6 +46,7 @@ pub enum Message {
     Stop,
     ToggleExpanded,
     FavoriteRemoved(String),
+    FavoritesReload,
     UpdateYtdlp,
     YtdlpUpdated(String),
     SystemTick,
@@ -259,6 +262,13 @@ impl Player {
     }
 }
 
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
+}
+
 impl Drop for Player {
     fn drop(&mut self) {
         self.stop();
@@ -324,6 +334,7 @@ impl Section for Player {
                 let _ = player::remove_favorite(self.ctx.db().conn(), &url);
                 self.reload_favorites();
             }
+            Message::FavoritesReload => self.reload_favorites(),
             Message::UpdateYtdlp => {
                 self.updating_ytdlp = true;
                 return Task::perform(async { mpv::update_ytdlp() }, Message::YtdlpUpdated);
@@ -339,33 +350,42 @@ impl Section for Player {
                 }
                 let platform = self.ctx.platform.clone();
                 return Task::perform(
-                    async move {
+                    blocking(move || {
                         platform
                             .media_session()
                             .and_then(|session| session.current())
                             .map_err(|e| e.to_string())
-                    },
+                    }),
                     Message::SystemLoaded,
                 );
             }
             Message::SystemLoaded(result) => self.system = result.ok().flatten(),
             Message::SystemCommand(command) => {
+                if command == MediaCommand::PlayPause
+                    && let Some(media) = &mut self.system
+                {
+                    media.playing = !media.playing;
+                }
                 let platform = self.ctx.platform.clone();
                 return Task::perform(
-                    async move {
+                    blocking(move || {
                         platform
                             .media_session()
                             .and_then(|session| session.send(command))
                             .map_err(|e| e.to_string())
-                    },
+                    }),
                     Message::SystemCommandDone,
                 );
             }
             Message::SystemCommandDone(result) => {
-                if let Err(error) = result {
+                if let Err(error) = result
+                    && !error.contains(NO_MEDIA)
+                {
                     self.notice = Some(error);
                 }
-                return Task::done(Message::SystemTick);
+                return Task::perform(async { tokio::time::sleep(SYSTEM_SETTLE).await }, |()| {
+                    Message::SystemTick
+                });
             }
             Message::ErrorDismissed => {
                 self.error = None;

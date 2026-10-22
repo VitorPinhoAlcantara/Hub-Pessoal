@@ -449,3 +449,116 @@ fn view_builds_for_every_screen_and_modal() {
     );
     let _ = agenda.view();
 }
+
+#[test]
+fn routine_projections_appear_on_future_days() {
+    let (mut agenda, ctx) = setup();
+    agenda::create_routine(
+        ctx.db().conn(),
+        agenda::NewRoutine {
+            title: "Treino".into(),
+            notes: String::new(),
+            recurrence: "cada:2:2026-10-21".parse().unwrap(),
+            time: NaiveTime::from_hms_opt(7, 0, 0),
+        },
+    )
+    .unwrap();
+    send(&mut agenda, [Message::Refresh]);
+    assert!(titles(&agenda, "2026-10-22").is_empty());
+    let projected = first_card(&agenda, "2026-10-23");
+    assert!(projected.projected);
+    assert_eq!(projected.title, "Treino");
+    assert!(!projected.can_move());
+    send(&mut agenda, [Message::OpenCard(projected.id)]);
+    assert_eq!(agenda.screen(), Screen::Routines);
+}
+
+#[test]
+fn dragging_moves_card_keeping_time() {
+    let (mut agenda, ctx) = setup();
+    create(
+        &mut agenda,
+        CardKind::Appointment,
+        "Dentista",
+        Some("2026-10-21"),
+        "15:00",
+    );
+    let card = first_card(&agenda, "2026-10-21");
+    hub_ui_kit::cursor::set_position(hub_ui_kit::iced::Point::new(10.0, 10.0));
+    send(
+        &mut agenda,
+        [
+            Message::CardPressed(card.id),
+            Message::DragMoved(hub_ui_kit::iced::Point::new(60.0, 10.0)),
+            Message::DayHovered(d("2026-10-24")),
+            Message::DragReleased,
+        ],
+    );
+    assert!(agenda.drag().is_none());
+    assert!(titles(&agenda, "2026-10-21").is_empty());
+    let moved = first_card(&agenda, "2026-10-24");
+    assert_eq!(moved.time, NaiveTime::from_hms_opt(15, 0, 0));
+    assert_eq!(
+        agenda::next_reminder_time(ctx.db().conn()).unwrap(),
+        Some(NaiveDateTime::parse_from_str("2026-10-24 15:00", "%Y-%m-%d %H:%M").unwrap())
+    );
+}
+
+#[test]
+fn click_without_movement_opens_card() {
+    let (mut agenda, _) = setup();
+    create(
+        &mut agenda,
+        CardKind::Reminder,
+        "Água",
+        Some("2026-10-21"),
+        "18:00",
+    );
+    let card = first_card(&agenda, "2026-10-21");
+    hub_ui_kit::cursor::set_position(hub_ui_kit::iced::Point::new(10.0, 10.0));
+    send(
+        &mut agenda,
+        [
+            Message::CardPressed(card.id),
+            Message::DragMoved(hub_ui_kit::iced::Point::new(12.0, 11.0)),
+            Message::DragReleased,
+        ],
+    );
+    assert!(agenda.editor().is_some());
+    assert_eq!(titles(&agenda, "2026-10-21"), ["Água"]);
+}
+
+#[test]
+fn context_menus_offer_actions() {
+    let (mut agenda, _) = setup();
+    create(
+        &mut agenda,
+        CardKind::Appointment,
+        "x",
+        Some("2026-10-21"),
+        "",
+    );
+    let card = first_card(&agenda, "2026-10-21");
+    send(&mut agenda, [Message::CardMenu(card.id)]);
+    let menu = agenda.context_menu().unwrap();
+    let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.contains(&"Concluir"));
+    assert!(labels.contains(&"Adiar para amanhã"));
+    send(&mut agenda, [Message::MoveCard(card.id, d("2026-10-22"))]);
+    assert!(agenda.context_menu().is_none());
+    assert_eq!(titles(&agenda, "2026-10-22"), ["x"]);
+    send(&mut agenda, [Message::DayMenu(Some(d("2026-10-25")))]);
+    let menu = agenda.context_menu().unwrap();
+    assert_eq!(menu.items.len(), 3);
+    send(
+        &mut agenda,
+        [Message::OpenCreateKind(
+            CardKind::Reminder,
+            Some(d("2026-10-25")),
+        )],
+    );
+    let editor = agenda.editor().unwrap();
+    assert_eq!(editor.kind, CardKind::Reminder);
+    assert_eq!(editor.date, Some(d("2026-10-25")));
+    let _ = agenda.view();
+}

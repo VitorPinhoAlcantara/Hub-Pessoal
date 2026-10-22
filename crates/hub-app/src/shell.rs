@@ -2,8 +2,10 @@ use hub_core::config::Renderer;
 use hub_core::confirm::ConfirmRequest;
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
-use hub_ui_kit::{Icon, Section, style};
-use iced::widget::{Column, button, column, container, mouse_area, opaque, row, space, stack};
+use hub_ui_kit::{ContextMenu, Icon, Section, cursor, menu, style};
+use iced::widget::{
+    Column, button, column, container, mouse_area, opaque, row, space, stack, text,
+};
 use iced::window::Direction;
 use iced::{Alignment, Element, Length, Padding, mouse};
 
@@ -18,13 +20,50 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill)
         .style(style::base);
     let mut layers = stack![window];
+    if let Some(menu) = active_menu(app) {
+        layers = layers.push(menu::view(&menu));
+    }
     if let Some(request) = app.confirmations.first() {
         layers = layers.push(confirmation(request, app.confirmations.len()));
     }
     if !app.maximized {
         layers = layers.push(resize_edges());
     }
-    layers.into()
+    cursor::tracker(layers).into()
+}
+
+fn active_menu(app: &App) -> Option<ContextMenu<Message>> {
+    if let Some(menu) = &app.toolbar_menu {
+        return Some(menu.clone());
+    }
+    if app.ai_open
+        && let Some(menu) = app.chat.as_ref().and_then(|c| c.context_menu())
+    {
+        return Some(menu.map(Message::Chat));
+    }
+    match app.tab {
+        Tab::Agenda => app
+            .agenda
+            .as_ref()
+            .and_then(|s| s.context_menu())
+            .map(|m| m.map(Message::Agenda)),
+        Tab::Scripts => app
+            .scripts
+            .as_ref()
+            .and_then(|s| s.context_menu())
+            .map(|m| m.map(Message::Scripts)),
+        Tab::Shortcuts => app
+            .shortcuts
+            .as_ref()
+            .and_then(|s| s.context_menu())
+            .map(|m| m.map(Message::Shortcuts)),
+        Tab::WhatsApp => app
+            .whatsapp
+            .as_ref()
+            .and_then(|s| s.context_menu())
+            .map(|m| m.map(Message::WhatsApp)),
+        Tab::Settings => None,
+    }
 }
 
 fn confirmation(request: &ConfirmRequest, pending: usize) -> Element<'_, Message> {
@@ -88,9 +127,17 @@ fn toolbar(app: &App) -> Element<'_, Message> {
     } else {
         Icon::Maximize
     };
+    let menu_button = |label: &'static str, message: Message| {
+        button(text(label).size(FONT_SIZE).color(TEXT_SECONDARY))
+            .padding([units(1), units(2) + 2.0])
+            .style(style::ghost)
+            .on_press(message)
+    };
     let bar = row![
         space().width(units(4)),
         body("hub").size(FONT_SIZE_HEADING),
+        space().width(units(6)),
+        menu_button("Aparência", Message::AppearanceMenu),
         space().width(Length::Fill),
         row![
             toggle(
@@ -166,11 +213,27 @@ fn main_area(app: &App) -> Element<'_, Message> {
         },
         Tab::Settings => settings(app),
     };
-    let mut panels = row![content].spacing(GAP_PANEL).height(Length::Fill);
+    let mut panels = row![content].height(Length::Fill);
     if app.ai_open
         && let Some(chat) = &app.chat
     {
-        panels = panels.push(chat.view().map(Message::Chat));
+        let handle =
+            mouse_area(
+                container(container(space()).width(2).height(units(10)).style(
+                    if app.resizing_chat {
+                        style::indicator
+                    } else {
+                        style::grip
+                    },
+                ))
+                .width(GAP_PANEL)
+                .height(Length::Fill)
+                .center_y(Length::Fill)
+                .center_x(GAP_PANEL),
+            )
+            .on_press(Message::ChatResizeStart)
+            .interaction(mouse::Interaction::ResizingHorizontally);
+        panels = panels.push(row![handle, chat.view().map(Message::Chat)]);
     }
     let area = container(panels)
         .padding(Padding::default().right(GAP_PANEL).bottom(GAP_PANEL))

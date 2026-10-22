@@ -3,6 +3,18 @@ use rusqlite::{Connection, params};
 
 pub const FAVORITES_LIMIT: usize = 12;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerCommand {
+    Pause,
+    Resume,
+    TogglePause,
+    Next,
+    Previous,
+    SetVolume(u8),
+    Stop,
+    FavoritesChanged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Favorite {
     pub url: String,

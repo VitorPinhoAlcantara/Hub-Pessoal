@@ -240,3 +240,36 @@ fn view_builds_in_every_state() {
     );
     let _ = section.view();
 }
+
+#[test]
+fn right_click_menus_offer_script_actions() {
+    let (mut section, ctx, _, _temp) = setup();
+    create_script(&ctx, "Backup", false);
+    send(
+        &mut section,
+        [Message::Refresh, Message::ScriptMenu("backup".into())],
+    );
+    let labels: Vec<String> = section
+        .context_menu()
+        .unwrap()
+        .items
+        .iter()
+        .map(|item| item.label.clone())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Executar",
+            "Editar",
+            "Abrir arquivo",
+            "Desativar",
+            "Excluir"
+        ]
+    );
+    send(&mut section, [Message::EditScript("backup".into())]);
+    assert!(section.context_menu().is_none());
+    send(&mut section, [Message::BackgroundMenu]);
+    assert_eq!(section.context_menu().unwrap().items.len(), 2);
+    send(&mut section, [Message::MenuClosed]);
+    assert!(section.menu().is_none());
+}

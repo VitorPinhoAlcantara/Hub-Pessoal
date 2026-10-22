@@ -199,6 +199,23 @@ fn play_request_opens_player_and_keeps_it_after_window_closes() {
 }
 
 #[test]
+fn player_control_from_bus_reaches_player() {
+    let (mut app, _, _) = setup();
+    let _ = app.update(Message::Bus(HubEvent::PlayerControl(
+        hub_core::player::PlayerCommand::SetVolume(40),
+    )));
+    let player = app.player.as_ref().unwrap();
+    assert_eq!(player.status().volume, 40.0);
+    let _ = app.update(Message::Bus(HubEvent::PlayerControl(
+        hub_core::player::PlayerCommand::Pause,
+    )));
+    let _ = app.update(Message::Bus(HubEvent::PlayerControl(
+        hub_core::player::PlayerCommand::FavoritesChanged,
+    )));
+    assert!(!app.player_open);
+}
+
+#[test]
 fn whatsapp_tab_is_heavy_and_released_on_hide() {
     let (mut app, _, _) = setup();
     let id = open(&mut app);

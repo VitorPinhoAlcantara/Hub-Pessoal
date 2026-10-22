@@ -190,3 +190,38 @@ fn logged_out_goes_back_to_pairing() {
     );
     assert!(matches!(section.connection(), Connection::WaitingQr));
 }
+
+#[test]
+fn right_click_offers_alias_and_missing_sidecar_has_guide() {
+    let mut section = section();
+    send(
+        &mut section,
+        [
+            Message::Bridge(BridgeEvent::Connected("eu@s.whatsapp.net".into())),
+            Message::Bridge(BridgeEvent::Message(incoming(
+                "1",
+                "ana@s.whatsapp.net",
+                "oi",
+            ))),
+            Message::ConversationMenu("ana@s.whatsapp.net".into()),
+        ],
+    );
+    assert_eq!(section.context_menu().unwrap().items.len(), 2);
+    send(
+        &mut section,
+        [Message::RenameConversation("ana@s.whatsapp.net".into())],
+    );
+    assert!(section.context_menu().is_none());
+    assert_eq!(section.alias(), Some(""));
+    assert_eq!(
+        section.selected().map(|c| c.jid.as_str()),
+        Some("ana@s.whatsapp.net")
+    );
+    send(
+        &mut section,
+        [Message::Bridge(BridgeEvent::Exited(
+            "Não foi possível iniciar o whatsapp-bridge (arquivo não encontrado)".into(),
+        ))],
+    );
+    let _ = section.view();
+}

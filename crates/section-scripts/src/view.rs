@@ -3,7 +3,8 @@ use hub_core::chrono::{Datelike, NaiveDateTime};
 use hub_core::scripts::runner::{OutputStream, Status};
 use hub_core::scripts::{self, Execution, Script};
 use hub_ui_kit::iced::widget::{
-    Column, Row, button, checkbox, column, container, row, scrollable, space, text, toggler,
+    Column, Row, button, checkbox, column, container, mouse_area, row, scrollable, space, text,
+    toggler,
 };
 use hub_ui_kit::iced::{Alignment, Color, Element, Font, Length, Padding};
 use hub_ui_kit::tokens::*;
@@ -91,7 +92,8 @@ pub fn view(section: &Scripts) -> Element<'_, Message> {
     };
 
     let body = row![
-        container(list).width(Length::Fill).height(Length::Fill),
+        mouse_area(container(list).width(Length::Fill).height(Length::Fill))
+            .on_right_press(Message::BackgroundMenu),
         detail(section)
     ]
     .spacing(GAP_PANEL)
@@ -218,35 +220,23 @@ fn script_card<'a>(section: &'a Scripts, script: &'a Script) -> Element<'a, Mess
                 move |on| Message::ActiveToggled(id.clone(), on)
             })
             .size(16),
-        icon_button(
-            Icon::Edit,
-            TEXT_SECONDARY,
-            Some(Message::EditScript(id.clone()))
-        ),
-        icon_button(
-            Icon::File,
-            TEXT_SECONDARY,
-            Some(Message::OpenFile(id.clone()))
-        ),
-        icon_button(
-            Icon::Trash,
-            TEXT_SECONDARY,
-            Some(Message::AskDelete(id.clone()))
-        ),
         action,
     ]
     .spacing(units(1))
     .align_y(Alignment::Center);
 
-    button(
-        row![info, tools]
-            .spacing(units(3))
-            .align_y(Alignment::Center),
+    mouse_area(
+        button(
+            row![info, tools]
+                .spacing(units(3))
+                .align_y(Alignment::Center),
+        )
+        .padding([units(3), units(4)])
+        .width(Length::Fill)
+        .style(style::selectable(selected))
+        .on_press(Message::Selected(id.clone())),
     )
-    .padding([units(3), units(4)])
-    .width(Length::Fill)
-    .style(style::selectable(selected))
-    .on_press(Message::Selected(id))
+    .on_right_press(Message::ScriptMenu(id))
     .into()
 }
 

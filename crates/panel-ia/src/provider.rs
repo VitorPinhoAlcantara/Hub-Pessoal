@@ -9,7 +9,7 @@ use hub_core::platform::{self, CommandSpec};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-pub const SYSTEM_PROMPT: &str = "Você é a assistente do hub pessoal do usuário, um app de desktop. Responda em português do Brasil, de forma curta. Use as ferramentas do hub (prefixo mcp__hub) para agenda, lembretes, scripts, atalhos e player. Datas e horas são locais.";
+pub const SYSTEM_PROMPT: &str = "Você é a assistente do hub pessoal do usuário, um app de desktop. Responda em português do Brasil, de forma curta. Use as ferramentas do hub (prefixo mcp__hub) para agenda, rotinas, lembretes, scripts, atalhos, player e WhatsApp. Para tarefas no computador existe a ferramenta terminal_executar, que roda um comando no PowerShell (Windows) ou sh (Linux); cada comando pede confirmação ao usuário no hub, então prefira um comando por vez e explique o que ele faz. Datas e horas são locais.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiEvent {
@@ -35,9 +35,43 @@ pub enum AiEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageInput {
+    pub media_type: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiRequest {
     pub prompt: String,
+    pub images: Vec<ImageInput>,
     pub session: Option<String>,
+}
+
+impl AiRequest {
+    pub fn user_line(&self) -> String {
+        let mut content: Vec<Value> = self
+            .images
+            .iter()
+            .map(|image| {
+                serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.media_type,
+                        "data": image.data,
+                    }
+                })
+            })
+            .collect();
+        if !self.prompt.is_empty() {
+            content.push(serde_json::json!({ "type": "text", "text": self.prompt }));
+        }
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        });
+        format!("{line}\n")
+    }
 }
 
 pub trait AiProvider: Send + Sync {
@@ -176,6 +210,8 @@ impl ClaudeCli {
     pub fn args(&self, session: Option<&str>) -> Vec<OsString> {
         let mut args: Vec<OsString> = [
             "-p",
+            "--input-format",
+            "stream-json",
             "--output-format",
             "stream-json",
             "--verbose",
@@ -220,7 +256,7 @@ impl AiProvider for ClaudeCli {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         platform::hide_console(&mut command);
-        let driver = drive(command, request.prompt, tx)
+        let driver = drive(command, request.user_line(), tx)
             .into_stream()
             .filter_map(|_| async { None });
         futures::stream::select(driver, rx).boxed()
@@ -229,7 +265,7 @@ impl AiProvider for ClaudeCli {
 
 async fn drive(
     mut command: tokio::process::Command,
-    prompt: String,
+    input: String,
     tx: mpsc::UnboundedSender<AiEvent>,
 ) {
     let mut child = match command.spawn() {
@@ -242,7 +278,7 @@ async fn drive(
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prompt.as_bytes()).await;
+        let _ = stdin.write_all(input.as_bytes()).await;
         let _ = stdin.shutdown().await;
     }
     let stderr_task = child.stderr.take().map(|mut stderr| {
@@ -326,6 +362,25 @@ mod tests {
     }
 
     #[test]
+    fn user_line_carries_images_before_text() {
+        let request = AiRequest {
+            prompt: "o que é isso?".into(),
+            images: vec![ImageInput {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
+            session: None,
+        };
+        let line = request.user_line();
+        assert!(line.ends_with('\n'));
+        let value: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["type"], "user");
+        let content = value["message"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["text"], "o que é isso?");
+    }
+
+    #[test]
     fn args_include_mcp_and_resume_when_available() {
         let cli = ClaudeCli::new(PathBuf::from("."), Some(PathBuf::from("mcp.json")));
         let args: Vec<String> = cli
@@ -338,6 +393,10 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__hub"]));
         assert!(args.windows(2).any(|w| w == ["--resume", "sessao"]));
         assert!(args.windows(2).any(|w| w == ["--tools", ""]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--input-format", "stream-json"])
+        );
         let plain = ClaudeCli::new(PathBuf::from("."), None).args(None);
         assert!(!plain.iter().any(|a| a == "--mcp-config"));
         assert!(!plain.iter().any(|a| a == "--resume"));

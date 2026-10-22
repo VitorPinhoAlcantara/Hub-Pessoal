@@ -3,8 +3,8 @@ use std::process::{Command, Stdio};
 
 use super::desktop_entry::{self, DesktopEntry};
 use super::{
-    ActionHandler, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
-    TrayHandler, TrayImage, collect_files, dedup_apps,
+    ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
+    TrayHandler, TrayImage, collect_files, dedup_apps, file_uri, find_in_path,
 };
 
 pub struct LinuxPlatform;
@@ -116,7 +116,7 @@ fn run_tray_loop() {
     }
 }
 
-fn applications_dirs() -> Vec<PathBuf> {
+fn data_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
@@ -129,6 +129,85 @@ fn applications_dirs() -> Vec<PathBuf> {
     data_home
         .into_iter()
         .chain(data_dirs.split(':').map(PathBuf::from))
+        .collect()
+}
+
+fn icon_file(icon: &str) -> Option<PathBuf> {
+    let dirs = data_dirs();
+    let mut icon_roots: Vec<PathBuf> = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".icons"))
+        .into_iter()
+        .collect();
+    icon_roots.extend(dirs.iter().map(|dir| dir.join("icons")));
+    let mut pixmap_roots: Vec<PathBuf> = dirs.iter().map(|dir| dir.join("pixmaps")).collect();
+    pixmap_roots.push(PathBuf::from("/usr/share/pixmaps"));
+    desktop_entry::icon_candidates(icon, &icon_roots, &pixmap_roots)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn desktop_file(id: &str) -> Option<PathBuf> {
+    applications_dirs().into_iter().find_map(|root| {
+        collect_files(&root, "desktop")
+            .into_iter()
+            .find(|file| desktop_id(&root, file).as_deref() == Some(id))
+    })
+}
+
+fn resolve_target(target: &Path) -> Option<PathBuf> {
+    if target.exists() {
+        return Some(target.to_path_buf());
+    }
+    let name = target.to_str()?;
+    if name.ends_with(".desktop") {
+        return desktop_file(name);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    find_in_path(name, &path_var, &[])
+}
+
+fn entry_for_program(program: &Path) -> Option<DesktopEntry> {
+    let name = program.file_name()?.to_str()?;
+    desktop_entries()
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .find(|entry| {
+            desktop_entry::exec_to_args(&entry.exec)
+                .first()
+                .and_then(|first| Path::new(first).file_name().map(|f| f == name))
+                .unwrap_or(false)
+        })
+}
+
+fn desktop_icon(path: &Path) -> Option<FileIcon> {
+    let entry = if path.extension().is_some_and(|ext| ext == "desktop") {
+        desktop_entry::parse(&std::fs::read_to_string(path).ok()?)?
+    } else if path.is_file() {
+        entry_for_program(path)?
+    } else {
+        return None;
+    };
+    let file = icon_file(entry.icon.as_deref()?)?;
+    std::fs::read(file).ok().map(FileIcon::Encoded)
+}
+
+fn show_in_file_manager(path: &Path) -> Result<(), PlatformError> {
+    let connection = zbus::blocking::Connection::session().map_err(media_error)?;
+    connection
+        .call_method(
+            Some("org.freedesktop.FileManager1"),
+            "/org/freedesktop/FileManager1",
+            Some("org.freedesktop.FileManager1"),
+            "ShowItems",
+            &(vec![file_uri(path)], ""),
+        )
+        .map_err(media_error)?;
+    Ok(())
+}
+
+fn applications_dirs() -> Vec<PathBuf> {
+    data_dirs()
+        .into_iter()
         .map(|dir| dir.join("applications"))
         .collect()
 }
@@ -223,6 +302,22 @@ impl Platform for LinuxPlatform {
         Ok(dedup_apps(apps))
     }
 
+    fn file_icon(&self, target: &Path) -> Option<FileIcon> {
+        desktop_icon(&resolve_target(target)?)
+    }
+
+    fn reveal_path(&self, target: &Path) -> Result<(), PlatformError> {
+        let path = resolve_target(target).ok_or_else(|| PlatformError::Launch {
+            target: target.to_string_lossy().into_owned(),
+            reason: "arquivo não encontrado".to_string(),
+        })?;
+        if show_in_file_manager(&path).is_ok() {
+            return Ok(());
+        }
+        let folder = path.parent().unwrap_or(&path).to_path_buf();
+        self.open_path(&folder)
+    }
+
     fn run_command(&self, command: &str) -> Result<(), PlatformError> {
         spawn_detached("sh", &["-c".to_string(), command.to_string()])
     }
@@ -257,6 +352,18 @@ mod tests {
         let root = Path::new("/usr/share/applications");
         let file = root.join("kde4").join("app.desktop");
         assert_eq!(desktop_id(root, &file).unwrap(), "kde4-app.desktop");
+    }
+
+    #[test]
+    fn existing_paths_resolve_to_themselves() {
+        let temp = std::env::temp_dir();
+        assert_eq!(resolve_target(&temp), Some(temp.clone()));
+        assert!(resolve_target(Path::new("programa-que-nao-existe-123")).is_none());
+    }
+
+    #[test]
+    fn missing_target_has_no_icon() {
+        assert!(LinuxPlatform.file_icon(Path::new("/nada/aqui")).is_none());
     }
 
     #[test]

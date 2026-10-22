@@ -162,3 +162,37 @@ fn view_builds_collapsed_and_expanded() {
     );
     let _ = ready.view();
 }
+
+#[test]
+fn system_play_pause_updates_optimistically_and_hides_no_media() {
+    let mut player = player(missing());
+    send(
+        &mut player,
+        [Message::SystemLoaded(Ok(Some(
+            hub_core::platform::MediaInfo {
+                title: "Podcast".into(),
+                artist: None,
+                playing: true,
+            },
+        )))],
+    );
+    send(
+        &mut player,
+        [Message::SystemCommand(
+            hub_core::platform::MediaCommand::PlayPause,
+        )],
+    );
+    assert!(!player.system().unwrap().playing);
+    send(
+        &mut player,
+        [Message::SystemCommandDone(Err(
+            "operação não suportada: nenhuma mídia tocando".into(),
+        ))],
+    );
+    assert!(player.notice().is_none());
+    send(
+        &mut player,
+        [Message::SystemCommandDone(Err("falhou".into()))],
+    );
+    assert_eq!(player.notice(), Some("falhou"));
+}

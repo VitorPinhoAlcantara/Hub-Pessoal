@@ -3,6 +3,7 @@ mod fake;
 pub mod ipc;
 mod notify;
 pub mod script;
+pub mod terminal;
 mod tray;
 
 #[cfg(target_os = "linux")]
@@ -13,7 +14,7 @@ mod windows;
 #[cfg(not(any(windows, target_os = "linux")))]
 compile_error!("o hub suporta apenas Windows e Linux");
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -55,6 +56,16 @@ impl Os {
 pub struct InstalledApp {
     pub name: String,
     pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileIcon {
+    Rgba {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+    Encoded(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +144,12 @@ pub trait Platform: Send + Sync {
     fn open_url(&self, url: &str) -> Result<(), PlatformError>;
     fn list_installed_apps(&self) -> Result<Vec<InstalledApp>, PlatformError>;
     fn run_command(&self, command: &str) -> Result<(), PlatformError>;
+    fn file_icon(&self, _target: &Path) -> Option<FileIcon> {
+        None
+    }
+    fn reveal_path(&self, _target: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("mostrar o arquivo na pasta"))
+    }
     fn script_command(&self, script: &Path) -> Result<CommandSpec, PlatformError> {
         script_command_for(script, self.os())
     }
@@ -253,9 +270,184 @@ pub fn dedup_apps(mut apps: Vec<InstalledApp>) -> Vec<InstalledApp> {
     apps
 }
 
+pub fn fold_text(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            'ý' | 'ÿ' => 'y',
+            other => other,
+        })
+        .collect()
+}
+
+pub fn filter_apps<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<(usize, &'a InstalledApp)> {
+    let query = fold_text(query);
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let mut found: Vec<(bool, usize, &InstalledApp)> = apps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, app)| {
+            let name = fold_text(&app.name);
+            terms.iter().all(|term| name.contains(term)).then(|| {
+                (
+                    terms.first().is_some_and(|t| name.starts_with(t)),
+                    index,
+                    app,
+                )
+            })
+        })
+        .collect();
+    found.sort_by_key(|(prefix, _, _)| !prefix);
+    found
+        .into_iter()
+        .map(|(_, index, app)| (index, app))
+        .collect()
+}
+
+pub fn find_in_path(name: &str, path_var: &OsStr, extensions: &[String]) -> Option<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return None;
+    }
+    let has_extension = Path::new(name).extension().is_some();
+    for dir in std::env::split_paths(path_var) {
+        let plain = dir.join(name);
+        if (has_extension || extensions.is_empty()) && plain.is_file() {
+            return Some(plain);
+        }
+        for extension in extensions {
+            let candidate = dir.join(format!("{name}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+pub fn bgra_to_rgba(pixels: &mut [u8]) {
+    let opaque = pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0);
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+        if opaque {
+            pixel[3] = 255;
+        } else if pixel[3] > 0 && pixel[3] < 255 {
+            let alpha = u32::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = (u32::from(*channel) * 255 / alpha).min(255) as u8;
+            }
+        }
+    }
+}
+
+pub fn file_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::from("file://");
+    if !text.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(&byte) {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app(name: &str) -> InstalledApp {
+        InstalledApp {
+            name: name.into(),
+            target: format!("{name}.lnk"),
+        }
+    }
+
+    #[test]
+    fn fold_text_ignores_case_and_accents() {
+        assert_eq!(
+            fold_text("Calculadora CIENTÍFICA Ção"),
+            "calculadora cientifica cao"
+        );
+    }
+
+    #[test]
+    fn filter_apps_matches_every_term_and_prefers_prefix() {
+        let apps = vec![
+            app("Visual Studio Code"),
+            app("Código Aberto"),
+            app("Steam"),
+            app("Microsoft Edge"),
+        ];
+        let found: Vec<&str> = filter_apps(&apps, "COD")
+            .into_iter()
+            .map(|(_, a)| a.name.as_str())
+            .collect();
+        assert_eq!(found, vec!["Código Aberto", "Visual Studio Code"]);
+        let found = filter_apps(&apps, "studio vis");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, 0);
+        assert_eq!(filter_apps(&apps, "  ").len(), 4);
+        assert!(filter_apps(&apps, "firefox").is_empty());
+    }
+
+    #[test]
+    fn find_in_path_uses_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("tool.exe"), "").unwrap();
+        std::fs::write(bin.join("plain"), "").unwrap();
+        let path_var = std::env::join_paths([temp.path().join("vazio"), bin.clone()]).unwrap();
+        let exts = vec![".com".to_string(), ".exe".to_string()];
+        assert_eq!(
+            find_in_path("tool", &path_var, &exts),
+            Some(bin.join("tool.exe"))
+        );
+        assert_eq!(
+            find_in_path("tool.exe", &path_var, &exts),
+            Some(bin.join("tool.exe"))
+        );
+        assert_eq!(
+            find_in_path("plain", &path_var, &[]),
+            Some(bin.join("plain"))
+        );
+        assert_eq!(find_in_path("plain", &path_var, &exts), None);
+        assert_eq!(find_in_path("bin/tool", &path_var, &exts), None);
+    }
+
+    #[test]
+    fn bgra_is_converted_and_unpremultiplied() {
+        let mut pixels = vec![10, 20, 30, 255, 0, 64, 128, 128];
+        bgra_to_rgba(&mut pixels);
+        assert_eq!(pixels, vec![30, 20, 10, 255, 255, 127, 0, 128]);
+        let mut no_alpha = vec![1, 2, 3, 0];
+        bgra_to_rgba(&mut no_alpha);
+        assert_eq!(no_alpha, vec![3, 2, 1, 255]);
+    }
+
+    #[test]
+    fn file_uri_escapes_special_characters() {
+        assert_eq!(
+            file_uri(Path::new("/home/eu/Meus Arquivos/ação.txt")),
+            "file:///home/eu/Meus%20Arquivos/a%C3%A7%C3%A3o.txt"
+        );
+        assert_eq!(
+            file_uri(Path::new("C:\\Pasta\\a b")),
+            "file:///C:/Pasta/a%20b"
+        );
+    }
 
     #[test]
     fn collect_files_walks_subfolders_and_filters_extension() {

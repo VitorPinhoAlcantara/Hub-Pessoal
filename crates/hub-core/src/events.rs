@@ -1,6 +1,7 @@
 use tokio::sync::broadcast;
 
 use crate::confirm::ConfirmRequest;
+use crate::player::PlayerCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HubEvent {
@@ -13,6 +14,7 @@ pub enum HubEvent {
     ConfirmationRequested(ConfirmRequest),
     ConfirmationClosed(u64),
     PlayRequested(String),
+    PlayerControl(PlayerCommand),
     WhatsAppChanged,
 }
 

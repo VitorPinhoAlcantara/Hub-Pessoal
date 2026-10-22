@@ -352,3 +352,11 @@ pub fn selectable(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
         }
     }
 }
+
+pub fn grip(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BORDER_SUBTLE)),
+        border: border(Color::TRANSPARENT, 0.0, 2.0),
+        ..container::Style::default()
+    }
+}

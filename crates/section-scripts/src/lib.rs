@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use hub_core::HubContext;
 use hub_core::scripts::runner::{self, CancelHandle, OutputStream, RunEvent, Status};
 use hub_core::scripts::{self, Execution, Origin, Script};
-use hub_ui_kit::Section;
 use hub_ui_kit::iced::keyboard::{self, key};
 use hub_ui_kit::iced::{Element, Event, Subscription, Task, event};
+use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section};
 
 pub use form::{FormMessage, ScriptForm};
 
@@ -85,6 +85,9 @@ pub enum Message {
     ModalClosed,
     HistorySelected(i64),
     ErrorDismissed,
+    ScriptMenu(String),
+    BackgroundMenu,
+    MenuClosed,
 }
 
 pub struct Scripts {
@@ -98,6 +101,7 @@ pub struct Scripts {
     modal: Option<Modal>,
     form_error: Option<String>,
     error: Option<String>,
+    menu: Option<ContextMenu<Message>>,
 }
 
 impl Scripts {
@@ -113,6 +117,7 @@ impl Scripts {
             modal: None,
             form_error: None,
             error: None,
+            menu: None,
         };
         section.reload();
         section
@@ -281,6 +286,46 @@ fn listen(
     }
 }
 
+impl Scripts {
+    pub fn menu(&self) -> Option<&ContextMenu<Message>> {
+        self.menu.as_ref()
+    }
+
+    fn script_menu(&self, id: &str) -> Option<ContextMenu<Message>> {
+        let script = self.script(id)?;
+        let id = id.to_string();
+        let running = self.runs.get(&id).is_some_and(Run::can_cancel);
+        let run = if running {
+            MenuItem::new("Parar", Message::Cancel(id.clone())).icon(Icon::Stop)
+        } else {
+            let item =
+                MenuItem::new("Executar", Message::RunRequested(id.clone())).icon(Icon::Play);
+            if script.can_run() {
+                item
+            } else {
+                item.disabled()
+            }
+        };
+        let active = script.meta.active;
+        Some(ContextMenu::at_cursor(
+            vec![
+                run,
+                MenuItem::new("Editar", Message::EditScript(id.clone())).icon(Icon::Edit),
+                MenuItem::new("Abrir arquivo", Message::OpenFile(id.clone())).icon(Icon::File),
+                MenuItem::new(
+                    if active { "Desativar" } else { "Ativar" },
+                    Message::ActiveToggled(id.clone(), !active),
+                )
+                .icon(Icon::Check),
+                MenuItem::new("Excluir", Message::AskDelete(id))
+                    .icon(Icon::Trash)
+                    .danger(),
+            ],
+            Message::MenuClosed,
+        ))
+    }
+}
+
 impl Section for Scripts {
     type Message = Message;
 
@@ -289,7 +334,22 @@ impl Section for Scripts {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if !matches!(message, Message::ScriptMenu(_) | Message::BackgroundMenu) {
+            self.menu = None;
+        }
         match message {
+            Message::ScriptMenu(id) => self.menu = self.script_menu(&id),
+            Message::BackgroundMenu => {
+                self.menu = Some(ContextMenu::at_cursor(
+                    vec![
+                        MenuItem::new("Novo script", Message::NewScript).icon(Icon::Plus),
+                        MenuItem::new("Abrir pasta dos scripts", Message::OpenFolder)
+                            .icon(Icon::Folder),
+                    ],
+                    Message::MenuClosed,
+                ));
+            }
+            Message::MenuClosed => {}
             Message::Refresh => self.reload(),
             Message::Selected(id) => {
                 self.selected = Some(id);
@@ -389,6 +449,10 @@ impl Section for Scripts {
 
     fn subscription(&self) -> Subscription<Message> {
         event::listen_with(listen)
+    }
+
+    fn context_menu(&self) -> Option<ContextMenu<Message>> {
+        self.menu.clone()
     }
 }
 

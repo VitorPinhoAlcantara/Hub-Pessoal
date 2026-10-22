@@ -47,7 +47,7 @@ fn sending_adds_user_item_and_marks_running() {
         &mut chat,
         [Message::InputChanged(" oi ".into()), Message::Send],
     );
-    assert!(matches!(&chat.items()[0], Item::User(text) if text == "oi"));
+    assert!(matches!(&chat.items()[0], Item::User { text, .. } if text == "oi"));
     assert!(chat.is_running());
     assert_eq!(chat.input(), "");
     send(
@@ -176,18 +176,21 @@ async fn cli_provider_streams_events_from_process() {
     let temp = tempfile::tempdir().unwrap();
     let windows = r#"$prompt = [Console]::In.ReadToEnd()
 Write-Output '{"type":"system","subtype":"init","session_id":"fake-1"}'
-Write-Output ('{"type":"assistant","message":{"content":[{"type":"text","text":"eco: ' + $prompt.Trim() + '"}]}}')
+$word = if ($prompt.Contains('"text":"teste"')) { 'teste' } else { 'vazio' }
+Write-Output ('{"type":"assistant","message":{"content":[{"type":"text","text":"eco: ' + $word + '"}]}}')
 Write-Output '{"type":"result","subtype":"success","is_error":false,"session_id":"fake-1","result":"ok"}'
 "#;
     let linux = r#"prompt=$(cat)
 echo '{"type":"system","subtype":"init","session_id":"fake-1"}'
-echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"eco: $prompt\"}]}}"
+case "$prompt" in *'"text":"teste"'*) word=teste;; *) word=vazio;; esac
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"eco: $word\"}]}}"
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"fake-1","result":"ok"}'
 "#;
     let cli = fake_cli(&temp, windows, linux);
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "teste".into(),
+            images: Vec::new(),
             session: None,
         })
         .collect()
@@ -208,6 +211,7 @@ async fn cli_provider_reports_failure_without_result() {
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "x".into(),
+            images: Vec::new(),
             session: None,
         })
         .collect()
@@ -222,9 +226,86 @@ async fn missing_program_is_reported() {
     let events: Vec<AiEvent> = cli
         .send(AiRequest {
             prompt: "x".into(),
+            images: Vec::new(),
             session: None,
         })
         .collect()
         .await;
     assert!(matches!(events.as_slice(), [AiEvent::Error(e)] if e.contains("Claude CLI")));
+}
+
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+];
+
+#[test]
+fn cancelled_message_can_be_edited_and_resent() {
+    let mut chat = chat();
+    send(
+        &mut chat,
+        [
+            Message::InputChanged("primeira\nlinha".into()),
+            Message::Send,
+            Message::Event(AiEvent::TextDelta("parcial".into())),
+            Message::Cancel,
+        ],
+    );
+    assert_eq!(chat.cancelled(), Some(0));
+    send(&mut chat, [Message::EditResend(0)]);
+    assert!(chat.items().is_empty());
+    assert_eq!(chat.input().trim_end(), "primeira\nlinha");
+    assert!(chat.cancelled().is_none());
+    send(&mut chat, [Message::Send]);
+    assert!(matches!(&chat.items()[0], Item::User { text, .. } if text == "primeira\nlinha"));
+}
+
+#[test]
+fn edit_is_ignored_while_running_and_menu_offers_actions() {
+    let mut chat = chat();
+    send(
+        &mut chat,
+        [Message::InputChanged("oi".into()), Message::Send],
+    );
+    send(&mut chat, [Message::EditResend(0)]);
+    assert_eq!(chat.items().len(), 1);
+    send(&mut chat, [Message::ItemMenu(0)]);
+    let menu = chat.context_menu().unwrap();
+    assert_eq!(menu.items.len(), 2);
+    assert!(menu.items[1].message.is_none());
+    send(&mut chat, [Message::Copy(0)]);
+    assert_eq!(chat.copied(), Some(0));
+    assert!(chat.context_menu().is_none());
+    assert_eq!(chat.items()[0].copy_text(), "oi");
+}
+
+#[test]
+fn image_attachments_are_validated_and_sent() {
+    assert_eq!(media_type_of("foto.JPG"), Some("image/jpeg"));
+    assert!(media_type_of("notas.txt").is_none());
+    assert!(Attachment::from_bytes("a.txt".into(), PNG.to_vec()).is_err());
+    assert!(Attachment::from_bytes("a.png".into(), vec![0; MAX_IMAGE_BYTES + 1]).is_err());
+    let attachment = Attachment::from_bytes("a.png".into(), PNG.to_vec()).unwrap();
+    let mut chat = chat();
+    assert!(!chat.can_send());
+    send(
+        &mut chat,
+        [Message::AttachmentLoaded(Ok(attachment.clone()))],
+    );
+    assert!(chat.can_send());
+    send(
+        &mut chat,
+        [
+            Message::AttachmentLoaded(Ok(attachment)),
+            Message::RemoveAttachment(1),
+            Message::AttachmentLoaded(Err("grande".into())),
+        ],
+    );
+    assert_eq!(chat.attachments().len(), 1);
+    assert!(matches!(&chat.items()[0], Item::Error(e) if e == "grande"));
+    send(&mut chat, [Message::Send]);
+    assert!(chat.attachments().is_empty());
+    assert!(
+        matches!(&chat.items()[1], Item::User { text, attachments } if text.is_empty() && attachments.len() == 1)
+    );
+    let _ = chat.view();
 }

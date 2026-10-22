@@ -1,12 +1,25 @@
 mod view;
 
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use hub_core::HubContext;
 use hub_core::per_os::PerOs;
-use hub_core::platform::{InstalledApp, Os};
+use hub_core::platform::{self, FileIcon, InstalledApp, Os, Platform};
 use hub_core::shortcuts::{self, DEFAULT_GROUP, Loaded, Shortcut, ShortcutKind};
-use hub_ui_kit::Section;
+use hub_ui_kit::iced::futures::{Stream, stream};
 use hub_ui_kit::iced::keyboard::{self, key};
+use hub_ui_kit::iced::widget::image::Handle;
 use hub_ui_kit::iced::{Element, Event, Subscription, Task, event};
+use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, dialog};
+
+pub const VISIBLE_APPS: usize = 60;
+const ICON_BATCH: usize = 16;
 
 #[derive(Debug, Clone)]
 pub enum FormMessage {
@@ -50,17 +63,6 @@ impl ShortcutForm {
         }
     }
 
-    pub fn from_app(app: &InstalledApp, os: Os) -> Self {
-        let mut form = Self::new();
-        form.name = app.name.clone();
-        form.group = "Programas".to_string();
-        match os {
-            Os::Windows => form.windows = app.target.clone(),
-            Os::Linux => form.linux = app.target.clone(),
-        }
-        form
-    }
-
     pub fn update(&mut self, message: FormMessage) {
         match message {
             FormMessage::NameChanged(name) => self.name = name,
@@ -68,6 +70,33 @@ impl ShortcutForm {
             FormMessage::WindowsChanged(value) => self.windows = value,
             FormMessage::LinuxChanged(value) => self.linux = value,
             FormMessage::GroupChanged(group) => self.group = group,
+        }
+    }
+
+    fn target_mut(&mut self, os: Os) -> &mut String {
+        match os {
+            Os::Windows => &mut self.windows,
+            Os::Linux => &mut self.linux,
+        }
+    }
+
+    pub fn apply_app(&mut self, app: &InstalledApp, os: Os) {
+        self.kind = ShortcutKind::Program;
+        self.name = app.name.clone();
+        *self.target_mut(os) = app.target.clone();
+    }
+
+    pub fn apply_path(&mut self, path: &Path, kind: ShortcutKind, os: Os) {
+        self.kind = kind;
+        *self.target_mut(os) = path.to_string_lossy().into_owned();
+        if self.name.trim().is_empty() {
+            let name = match kind {
+                ShortcutKind::Folder => path.file_name(),
+                _ => path.file_stem(),
+            };
+            if let Some(name) = name {
+                self.name = name.to_string_lossy().into_owned();
+            }
         }
     }
 
@@ -94,27 +123,16 @@ impl Default for ShortcutForm {
     }
 }
 
-pub struct Suggest {
-    pub apps: Option<Vec<InstalledApp>>,
-    pub query: String,
-    pub error: Option<String>,
-}
-
-impl Suggest {
-    pub fn filtered(&self) -> Vec<(usize, &InstalledApp)> {
-        let query = self.query.trim().to_lowercase();
-        self.apps
-            .iter()
-            .flatten()
-            .enumerate()
-            .filter(|(_, app)| query.is_empty() || app.name.to_lowercase().contains(&query))
-            .collect()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Apps {
+    Idle,
+    Loading,
+    Ready(Vec<InstalledApp>),
+    Failed(String),
 }
 
 pub enum Modal {
     Form(ShortcutForm),
-    Suggest(Suggest),
     ConfirmDelete(usize),
 }
 
@@ -123,16 +141,24 @@ pub enum Message {
     Refresh,
     QueryChanged(String),
     Open(usize),
+    Reveal(usize),
     NewShortcut,
     Edit(usize),
+    CardMenu(usize),
+    AreaMenu,
+    MenuClosed,
     Form(FormMessage),
     FormSaved,
     AskDelete(usize),
     DeleteConfirmed,
-    SuggestOpened,
     AppsLoaded(Result<Vec<InstalledApp>, String>),
-    SuggestQueryChanged(String),
+    AppQueryChanged(String),
     AppPicked(usize),
+    PickFile,
+    PickFolder,
+    FilePicked(Option<PathBuf>),
+    FolderPicked(Option<PathBuf>),
+    IconsLoaded(Vec<(PathBuf, Option<Handle>)>),
     ModalClosed,
     ErrorDismissed,
 }
@@ -142,8 +168,36 @@ pub struct Shortcuts {
     loaded: Loaded,
     query: String,
     modal: Option<Modal>,
+    menu: Option<ContextMenu<Message>>,
+    icons: HashMap<PathBuf, Option<Handle>>,
+    apps: Apps,
+    app_query: String,
     form_error: Option<String>,
     error: Option<String>,
+}
+
+pub fn ellipsize(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max || max < 3 {
+        return text.to_string();
+    }
+    let keep = max - 1;
+    let head = keep / 3;
+    let tail = keep - head;
+    let start: String = chars[..head].iter().collect();
+    let end: String = chars[chars.len() - tail..].iter().collect();
+    format!("{start}…{end}")
+}
+
+pub fn icon_handle(icon: FileIcon) -> Handle {
+    match icon {
+        FileIcon::Rgba {
+            width,
+            height,
+            pixels,
+        } => Handle::from_rgba(width, height, pixels),
+        FileIcon::Encoded(bytes) => Handle::from_bytes(bytes),
+    }
 }
 
 impl Shortcuts {
@@ -154,6 +208,10 @@ impl Shortcuts {
             loaded,
             query: String::new(),
             modal: None,
+            menu: None,
+            icons: HashMap::new(),
+            apps: Apps::Idle,
+            app_query: String::new(),
             form_error: None,
             error: None,
         }
@@ -179,12 +237,72 @@ impl Shortcuts {
         self.modal.as_ref()
     }
 
+    pub fn form(&self) -> Option<&ShortcutForm> {
+        match &self.modal {
+            Some(Modal::Form(form)) => Some(form),
+            _ => None,
+        }
+    }
+
     pub fn form_error(&self) -> Option<&str> {
         self.form_error.as_deref()
     }
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub fn apps(&self) -> &Apps {
+        &self.apps
+    }
+
+    pub fn app_query(&self) -> &str {
+        &self.app_query
+    }
+
+    pub fn visible_apps(&self) -> Vec<(usize, &InstalledApp)> {
+        match &self.apps {
+            Apps::Ready(apps) => {
+                let mut found = platform::filter_apps(apps, &self.app_query);
+                found.truncate(VISIBLE_APPS);
+                found
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn icon(&self, path: &Path) -> Option<&Handle> {
+        self.icons.get(path).and_then(Option::as_ref)
+    }
+
+    pub fn shortcut_icon(&self, shortcut: &Shortcut) -> Option<&Handle> {
+        shortcuts::local_path(shortcut, self.os()).and_then(|path| self.icon(&path))
+    }
+
+    pub fn missing_icons(&self) -> Vec<PathBuf> {
+        let os = self.os();
+        let mut wanted: Vec<PathBuf> = self
+            .shortcuts()
+            .iter()
+            .filter_map(|shortcut| shortcuts::local_path(shortcut, os))
+            .collect();
+        if self.form().is_some_and(|f| f.kind == ShortcutKind::Program) {
+            wanted.extend(
+                self.visible_apps()
+                    .into_iter()
+                    .map(|(_, app)| PathBuf::from(&app.target)),
+            );
+        }
+        let mut missing = Vec::new();
+        for path in wanted {
+            if !self.icons.contains_key(&path) && !missing.contains(&path) {
+                missing.push(path);
+                if missing.len() == ICON_BATCH {
+                    break;
+                }
+            }
+        }
+        missing
     }
 
     pub fn grouped(&self) -> Vec<(String, Vec<(usize, &Shortcut)>)> {
@@ -212,6 +330,48 @@ impl Shortcuts {
         self.loaded = self.ctx.shortcuts();
     }
 
+    fn card_menu(&self, index: usize) -> Option<ContextMenu<Message>> {
+        let shortcut = self.shortcuts().get(index)?;
+        let os = self.os();
+        let open = MenuItem::new("Abrir", Message::Open(index)).icon(Icon::Play);
+        let mut items = vec![if shortcut.target.for_os(os).is_some() {
+            open
+        } else {
+            open.disabled()
+        }];
+        items.push(MenuItem::new("Editar", Message::Edit(index)).icon(Icon::Edit));
+        if shortcuts::local_path(shortcut, os).is_some() {
+            items.push(
+                MenuItem::new("Abrir local do arquivo", Message::Reveal(index)).icon(Icon::Folder),
+            );
+        }
+        items.push(
+            MenuItem::new("Excluir", Message::AskDelete(index))
+                .icon(Icon::Trash)
+                .danger(),
+        );
+        Some(ContextMenu::at_cursor(items, Message::MenuClosed))
+    }
+
+    fn area_menu(&self) -> ContextMenu<Message> {
+        ContextMenu::at_cursor(
+            vec![MenuItem::new("Novo atalho", Message::NewShortcut).icon(Icon::Plus)],
+            Message::MenuClosed,
+        )
+    }
+
+    fn open_form(&mut self, form: ShortcutForm) -> Task<Message> {
+        self.form_error = None;
+        self.app_query.clear();
+        self.modal = Some(Modal::Form(form));
+        if matches!(self.apps, Apps::Idle | Apps::Failed(_)) {
+            self.apps = Apps::Loading;
+            let platform = self.ctx.platform.clone();
+            return Task::perform(load_apps(platform), Message::AppsLoaded);
+        }
+        Task::none()
+    }
+
     fn save_form(&mut self) {
         let Some(Modal::Form(form)) = &self.modal else {
             return;
@@ -234,6 +394,50 @@ impl Shortcuts {
             Err(error) => self.form_error = Some(error.to_string()),
         }
     }
+
+    fn apply_picked(&mut self, path: Option<PathBuf>, kind: ShortcutKind) {
+        let os = self.os();
+        if let (Some(path), Some(Modal::Form(form))) = (path, &mut self.modal) {
+            form.apply_path(&path, kind, os);
+            self.form_error = None;
+        }
+    }
+}
+
+async fn load_apps(platform: Arc<dyn Platform>) -> Result<Vec<InstalledApp>, String> {
+    tokio::task::spawn_blocking(move || platform.list_installed_apps().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+struct IconJob {
+    paths: Vec<PathBuf>,
+    platform: Arc<dyn Platform>,
+}
+
+impl Hash for IconJob {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.paths.hash(state);
+    }
+}
+
+fn load_icons(job: &IconJob) -> impl Stream<Item = Message> + use<> {
+    let paths = job.paths.clone();
+    let platform = job.platform.clone();
+    stream::once(async move {
+        let loaded = tokio::task::spawn_blocking(move || {
+            paths
+                .into_iter()
+                .map(|path| {
+                    let icon = platform.file_icon(&path).map(icon_handle);
+                    (path, icon)
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+        Message::IconsLoaded(loaded)
+    })
 }
 
 fn listen(
@@ -258,6 +462,12 @@ impl Section for Shortcuts {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if !matches!(
+            message,
+            Message::AppsLoaded(_) | Message::IconsLoaded(_) | Message::Refresh
+        ) {
+            self.menu = None;
+        }
         match message {
             Message::Refresh => self.reload(),
             Message::QueryChanged(query) => self.query = query,
@@ -268,20 +478,33 @@ impl Section for Shortcuts {
                     self.error = Some(format!("Não foi possível abrir {}: {error}", shortcut.name));
                 }
             }
-            Message::NewShortcut => {
-                self.form_error = None;
-                self.modal = Some(Modal::Form(ShortcutForm::new()));
+            Message::Reveal(index) => {
+                if let Some(shortcut) = self.shortcuts().get(index)
+                    && let Err(error) = shortcuts::reveal(self.ctx.platform.as_ref(), shortcut)
+                {
+                    self.error = Some(format!(
+                        "Não foi possível mostrar {} na pasta: {error}",
+                        shortcut.name
+                    ));
+                }
             }
+            Message::NewShortcut => return self.open_form(ShortcutForm::new()),
             Message::Edit(index) => {
                 if let Some(form) = self
                     .shortcuts()
                     .get(index)
                     .map(|s| ShortcutForm::edit(index, s))
                 {
-                    self.form_error = None;
-                    self.modal = Some(Modal::Form(form));
+                    return self.open_form(form);
                 }
             }
+            Message::CardMenu(index) => self.menu = self.card_menu(index),
+            Message::AreaMenu => {
+                if self.modal.is_none() {
+                    self.menu = Some(self.area_menu());
+                }
+            }
+            Message::MenuClosed => {}
             Message::Form(message) => {
                 if let Some(Modal::Form(form)) = &mut self.modal {
                     form.update(message);
@@ -300,49 +523,33 @@ impl Section for Shortcuts {
                     self.reload();
                 }
             }
-            Message::SuggestOpened => {
-                self.modal = Some(Modal::Suggest(Suggest {
-                    apps: None,
-                    query: String::new(),
-                    error: None,
-                }));
-                let platform = self.ctx.platform.clone();
-                return Task::perform(
-                    async move { platform.list_installed_apps().map_err(|e| e.to_string()) },
-                    Message::AppsLoaded,
-                );
-            }
             Message::AppsLoaded(result) => {
-                if let Some(Modal::Suggest(suggest)) = &mut self.modal {
-                    match result {
-                        Ok(apps) => suggest.apps = Some(apps),
-                        Err(error) => {
-                            suggest.apps = Some(Vec::new());
-                            suggest.error = Some(error);
-                        }
-                    }
-                }
+                self.apps = match result {
+                    Ok(apps) => Apps::Ready(apps),
+                    Err(error) => Apps::Failed(error),
+                };
             }
-            Message::SuggestQueryChanged(query) => {
-                if let Some(Modal::Suggest(suggest)) = &mut self.modal {
-                    suggest.query = query;
-                }
-            }
+            Message::AppQueryChanged(query) => self.app_query = query,
             Message::AppPicked(index) => {
                 let os = self.os();
-                let form = match &self.modal {
-                    Some(Modal::Suggest(suggest)) => suggest
-                        .apps
-                        .as_ref()
-                        .and_then(|apps| apps.get(index))
-                        .map(|app| ShortcutForm::from_app(app, os)),
+                let app = match &self.apps {
+                    Apps::Ready(apps) => apps.get(index).cloned(),
                     _ => None,
                 };
-                if let Some(form) = form {
+                if let (Some(app), Some(Modal::Form(form))) = (app, &mut self.modal) {
+                    form.apply_app(&app, os);
                     self.form_error = None;
-                    self.modal = Some(Modal::Form(form));
                 }
             }
+            Message::PickFile => {
+                return Task::perform(dialog::pick_file("Escolher arquivo"), Message::FilePicked);
+            }
+            Message::PickFolder => {
+                return Task::perform(dialog::pick_folder("Escolher pasta"), Message::FolderPicked);
+            }
+            Message::FilePicked(path) => self.apply_picked(path, ShortcutKind::Program),
+            Message::FolderPicked(path) => self.apply_picked(path, ShortcutKind::Folder),
+            Message::IconsLoaded(icons) => self.icons.extend(icons),
             Message::ModalClosed => self.modal = None,
             Message::ErrorDismissed => self.error = None,
         }
@@ -354,180 +561,19 @@ impl Section for Shortcuts {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(listen)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use hub_core::clock::FakeClock;
-    use hub_core::platform::{FakePlatform, PlatformCall};
-    use hub_core::{Config, Database, HubPaths};
-
-    use super::*;
-
-    fn setup(apps: Vec<InstalledApp>) -> (Shortcuts, Arc<FakePlatform>, tempfile::TempDir) {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = HubPaths::from_home(temp.path());
-        paths.ensure_dirs().unwrap();
-        let platform = Arc::new(FakePlatform::new(Os::Windows).with_apps(apps));
-        let ctx = HubContext::new(
-            paths,
-            Config::default(),
-            Database::open_in_memory().unwrap(),
-            platform.clone(),
-            Arc::new(FakeClock::at("2026-10-21 10:00")),
-        );
-        (Shortcuts::new(ctx), platform, temp)
-    }
-
-    fn send(section: &mut Shortcuts, messages: impl IntoIterator<Item = Message>) {
-        for message in messages {
-            let _ = section.update(message);
+        let keys = event::listen_with(listen);
+        let missing = self.missing_icons();
+        if missing.is_empty() {
+            return keys;
         }
-    }
-
-    fn add(section: &mut Shortcuts, name: &str, kind: ShortcutKind, target: &str, group: &str) {
-        send(
-            section,
-            [
-                Message::NewShortcut,
-                Message::Form(FormMessage::NameChanged(name.into())),
-                Message::Form(FormMessage::KindSelected(kind)),
-                Message::Form(FormMessage::WindowsChanged(target.into())),
-                Message::Form(FormMessage::LinuxChanged(target.into())),
-                Message::Form(FormMessage::GroupChanged(group.into())),
-                Message::FormSaved,
-            ],
-        );
-    }
-
-    #[test]
-    fn adding_groups_and_searching() {
-        let (mut section, _, _temp) = setup(Vec::new());
-        add(
-            &mut section,
-            "VS Code",
-            ShortcutKind::Program,
-            "code",
-            "Dev",
-        );
-        add(
-            &mut section,
-            "Projetos",
-            ShortcutKind::Folder,
-            "~/projetos",
-            "Pastas",
-        );
-        add(
-            &mut section,
-            "GitHub",
-            ShortcutKind::Url,
-            "github.com",
-            "Dev",
-        );
-        assert!(section.modal().is_none());
-        let groups = section.grouped();
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].0, "Dev");
-        assert_eq!(groups[0].1.len(), 2);
-        assert_eq!(section.shortcuts()[0].target, PerOs::Same("code".into()));
-        send(&mut section, [Message::QueryChanged("git".into())]);
-        let groups = section.grouped();
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].1[0].1.name, "GitHub");
-    }
-
-    #[test]
-    fn invalid_form_shows_error() {
-        let (mut section, _, _temp) = setup(Vec::new());
-        send(&mut section, [Message::NewShortcut, Message::FormSaved]);
-        assert!(section.form_error().is_some());
-        assert!(matches!(section.modal(), Some(Modal::Form(_))));
-    }
-
-    #[test]
-    fn open_edit_and_delete() {
-        let (mut section, platform, _temp) = setup(Vec::new());
-        add(
-            &mut section,
-            "Site",
-            ShortcutKind::Url,
-            "exemplo.com",
-            "Web",
-        );
-        send(&mut section, [Message::Open(0)]);
-        assert_eq!(
-            platform.calls(),
-            vec![PlatformCall::OpenUrl("https://exemplo.com".into())]
-        );
-        send(
-            &mut section,
-            [
-                Message::Edit(0),
-                Message::Form(FormMessage::NameChanged("Site novo".into())),
-                Message::FormSaved,
-            ],
-        );
-        assert_eq!(section.shortcuts()[0].name, "Site novo");
-        send(&mut section, [Message::AskDelete(0)]);
-        assert_eq!(section.shortcuts().len(), 1);
-        send(&mut section, [Message::DeleteConfirmed]);
-        assert!(section.shortcuts().is_empty());
-    }
-
-    #[test]
-    fn suggestions_prefill_form() {
-        let apps = vec![
-            InstalledApp {
-                name: "Firefox".into(),
-                target: "C:\\firefox.lnk".into(),
-            },
-            InstalledApp {
-                name: "Steam".into(),
-                target: "C:\\steam.lnk".into(),
-            },
-        ];
-        let (mut section, _, _temp) = setup(apps.clone());
-        send(
-            &mut section,
-            [
-                Message::SuggestOpened,
-                Message::AppsLoaded(Ok(apps)),
-                Message::SuggestQueryChanged("ste".into()),
-            ],
-        );
-        let Some(Modal::Suggest(suggest)) = section.modal() else {
-            panic!("esperava sugestões")
+        let job = IconJob {
+            paths: missing,
+            platform: self.ctx.platform.clone(),
         };
-        let filtered = suggest.filtered();
-        assert_eq!(filtered.len(), 1);
-        let index = filtered[0].0;
-        send(
-            &mut section,
-            [Message::AppPicked(index), Message::FormSaved],
-        );
-        let saved = &section.shortcuts()[0];
-        assert_eq!(saved.name, "Steam");
-        assert_eq!(saved.target.windows(), Some("C:\\steam.lnk"));
-        assert_eq!(saved.target.linux(), None);
+        Subscription::batch([keys, Subscription::run_with(job, load_icons)])
     }
 
-    #[test]
-    fn view_builds_in_every_state() {
-        let (mut section, _, _temp) = setup(Vec::new());
-        let _ = section.view();
-        add(&mut section, "A", ShortcutKind::Command, "echo oi", "G");
-        let _ = section.view();
-        send(&mut section, [Message::SuggestOpened]);
-        let _ = section.view();
-        send(&mut section, [Message::AppsLoaded(Ok(Vec::new()))]);
-        let _ = section.view();
-        send(&mut section, [Message::Edit(0)]);
-        let _ = section.view();
-        send(&mut section, [Message::AskDelete(0)]);
-        let _ = section.view();
+    fn context_menu(&self) -> Option<ContextMenu<Message>> {
+        self.menu.clone()
     }
 }

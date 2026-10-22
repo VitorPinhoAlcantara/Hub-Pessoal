@@ -8,12 +8,13 @@ use hub_core::whatsapp::protocol::Request;
 use hub_core::whatsapp::{
     self, Conversation, MESSAGES_LIMIT, Message as ChatMessage, WireConversation, WireMessage,
 };
-use hub_ui_kit::Section;
 use hub_ui_kit::iced::keyboard::{self, key};
 use hub_ui_kit::iced::widget::qr_code;
 use hub_ui_kit::iced::{Element, Event, Subscription, Task, event};
+use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section};
 
 pub const SESSION_ENDED: &str = "sessao_encerrada";
+pub const SIDECAR_MISSING: &str = "Não foi possível iniciar";
 
 pub enum Connection {
     Starting,
@@ -39,6 +40,9 @@ pub enum Message {
     Retry,
     Refresh,
     ErrorDismissed,
+    ConversationMenu(String),
+    RenameConversation(String),
+    MenuClosed,
 }
 
 pub struct WhatsApp {
@@ -54,6 +58,7 @@ pub struct WhatsApp {
     sending: bool,
     alias: Option<String>,
     error: Option<String>,
+    menu: Option<ContextMenu<Message>>,
 }
 
 impl WhatsApp {
@@ -71,6 +76,7 @@ impl WhatsApp {
             sending: false,
             alias: None,
             error: None,
+            menu: None,
         };
         section.reload();
         section
@@ -226,7 +232,27 @@ impl Section for WhatsApp {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if !matches!(message, Message::ConversationMenu(_) | Message::Bridge(_)) {
+            self.menu = None;
+        }
         match message {
+            Message::ConversationMenu(jid) => {
+                self.menu = Some(ContextMenu::at_cursor(
+                    vec![
+                        MenuItem::new("Abrir conversa", Message::Selected(jid.clone()))
+                            .icon(Icon::WhatsApp),
+                        MenuItem::new("Definir apelido", Message::RenameConversation(jid))
+                            .icon(Icon::Edit),
+                    ],
+                    Message::MenuClosed,
+                ));
+            }
+            Message::RenameConversation(jid) => {
+                self.selected = Some(jid);
+                self.reload();
+                self.alias = self.selected().map(|c| c.alias.clone().unwrap_or_default());
+            }
+            Message::MenuClosed => {}
             Message::Bridge(event) => return self.on_bridge(event),
             Message::ConversationsLoaded(result) => match result {
                 Ok(list) => {
@@ -302,6 +328,10 @@ impl Section for WhatsApp {
 
     fn view(&self) -> Element<'_, Message> {
         view::view(self)
+    }
+
+    fn context_menu(&self) -> Option<ContextMenu<Message>> {
+        self.menu.clone()
     }
 
     fn subscription(&self) -> Subscription<Message> {

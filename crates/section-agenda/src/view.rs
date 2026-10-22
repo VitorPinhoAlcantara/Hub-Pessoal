@@ -2,10 +2,10 @@ use hub_core::agenda::recurrence::weekday_short;
 use hub_core::agenda::{Priority, Reminder, Routine, Task};
 use hub_core::chrono::{Datelike, NaiveDate, TimeDelta};
 use hub_ui_kit::iced::widget::{
-    Column, Row, button, checkbox, column, container, responsive, row, scrollable, space, text,
-    text_editor, toggler,
+    Column, Row, button, checkbox, column, container, mouse_area, responsive, row, scrollable,
+    space, text, text_editor, toggler,
 };
-use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding};
+use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding, mouse};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
@@ -234,8 +234,11 @@ fn missed_banner(missed: &[Reminder], today: NaiveDate) -> Element<'_, Message> 
     .into()
 }
 
-fn card_view(card: &Card, today: NaiveDate, show_date: bool) -> Element<'_, Message> {
+fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element<'a, Message> {
+    let today = agenda.today();
     let color = kind_color(card.kind);
+    let dragging = agenda.drag().is_some_and(|d| d.active && d.card == card.id);
+    let faded = card.done || card.projected || dragging;
     let leading: Element<'_, Message> = match card.id {
         CardId::Task(id) => checkbox(card.done)
             .on_toggle(move |done| Message::TaskToggled(id, done))
@@ -247,6 +250,7 @@ fn card_view(card: &Card, today: NaiveDate, show_date: bool) -> Element<'_, Mess
             ICON_SIZE - 3.0,
             if card.done { alpha(color, 0.5) } else { color },
         ),
+        CardId::Projection { .. } => icon(Icon::Repeat, ICON_SIZE - 3.0, alpha(color, 0.6)),
     };
     let mut meta = Row::new().spacing(units(2)).align_y(Alignment::Center);
     if show_date && let Some(date) = card.date {
@@ -255,43 +259,42 @@ fn card_view(card: &Card, today: NaiveDate, show_date: bool) -> Element<'_, Mess
     if let Some(time) = card.time {
         meta = meta.push(small(time.format("%H:%M").to_string()).color(TEXT_PRIMARY));
     }
-    meta = meta.push(small(card.kind.label()).color(color));
+    meta = meta.push(
+        small(if card.projected {
+            "Rotina prevista"
+        } else {
+            card.kind.label()
+        })
+        .color(color),
+    );
     if card.is_overdue(today) {
         meta = meta.push(small("atrasada").color(DANGER));
     }
     if card.high_priority {
         meta = meta.push(icon(Icon::Flag, ICON_SIZE - 7.0, DANGER));
     }
-    let title_color = if card.done {
-        TEXT_SECONDARY
-    } else {
-        TEXT_PRIMARY
-    };
+    let title_color = if faded { TEXT_SECONDARY } else { TEXT_PRIMARY };
     let content = container(
         row![
             leading,
             column![body(card.title.as_str()).color(title_color), meta]
                 .spacing(units(1))
                 .width(Length::Fill),
-            button(icon(Icon::Trash, ICON_SIZE - 6.0, TEXT_SECONDARY))
-                .padding(units(1))
-                .style(style::danger)
-                .on_press(Message::AskDelete(
-                    DeleteTarget::Card(card.id),
-                    card.title.clone()
-                )),
         ]
         .spacing(units(2))
         .align_y(Alignment::Start),
     )
     .padding([units(2), units(2) + 2.0])
     .width(Length::Fill)
-    .style(style::outlined(color, card.done));
-    button(content)
-        .padding(0)
-        .width(Length::Fill)
-        .style(style::list_item)
-        .on_press(Message::OpenCard(card.id))
+    .style(style::outlined(color, faded));
+    mouse_area(content)
+        .on_press(Message::CardPressed(card.id))
+        .on_right_press(Message::CardMenu(card.id))
+        .interaction(if card.can_move() {
+            mouse::Interaction::Grab
+        } else {
+            mouse::Interaction::Pointer
+        })
         .into()
 }
 
@@ -301,7 +304,6 @@ fn cards_list<'a>(
     show_date: bool,
     empty: &'a str,
 ) -> Element<'a, Message> {
-    let today = agenda.today();
     let visible: Vec<&Card> = cards.iter().filter(|c| agenda.shows(c.kind)).collect();
     let content: Element<'a, Message> = if visible.is_empty() {
         container(small(empty))
@@ -312,7 +314,7 @@ fn cards_list<'a>(
         visible
             .into_iter()
             .fold(Column::new().spacing(units(2)), |col, card| {
-                col.push(card_view(card, today, show_date))
+                col.push(card_view(agenda, card, show_date))
             })
             .into()
     };
@@ -326,6 +328,8 @@ fn day_column<'a>(agenda: &'a Agenda, day: &'a DayColumn, width: f32) -> Element
     let today = agenda.today();
     let is_today = day.date == today;
     let is_past = day.date < today;
+    let drop_target =
+        agenda.drag().is_some_and(|d| d.active) && agenda.hovered_day() == Some(day.date);
     let name_color = if is_today {
         ACCENT
     } else if is_past {
@@ -357,11 +361,19 @@ fn day_column<'a>(agenda: &'a Agenda, day: &'a DayColumn, width: f32) -> Element
         ),
     ]
     .align_y(Alignment::Center);
-    container(column![head, cards_list(agenda, &day.cards, false, "Livre")].spacing(units(3)))
-        .padding(units(3))
-        .width(width)
-        .height(Length::Fill)
-        .style(style::day_column(is_today, is_past))
+    let column =
+        container(column![head, cards_list(agenda, &day.cards, false, "Livre")].spacing(units(3)))
+            .padding(units(3))
+            .width(width)
+            .height(Length::Fill)
+            .style(style::day_column(
+                is_today || drop_target,
+                is_past && !drop_target,
+            ));
+    mouse_area(column)
+        .on_enter(Message::DayHovered(day.date))
+        .on_exit(Message::DayLeft(day.date))
+        .on_right_press(Message::DayMenu(Some(day.date)))
         .into()
 }
 
@@ -506,13 +518,16 @@ fn calendar_cell<'a>(
     if visible.len() > CALENDAR_ITEMS {
         items = items.push(small(format!("+{} mais", visible.len() - CALENDAR_ITEMS)));
     }
-    button(container(items).clip(true))
-        .padding(units(2))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(style::calendar_cell(is_today, in_month))
-        .on_press(Message::DayOpened(day.date))
-        .into()
+    mouse_area(
+        button(container(items).clip(true))
+            .padding(units(2))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(style::calendar_cell(is_today, in_month))
+            .on_press(Message::DayOpened(day.date)),
+    )
+    .on_right_press(Message::DayMenu(Some(day.date)))
+    .into()
 }
 
 fn field<'a>(label: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {

@@ -247,6 +247,24 @@ pub fn open(platform: &dyn Platform, shortcut: &Shortcut) -> Result<()> {
     Ok(())
 }
 
+pub fn local_path(shortcut: &Shortcut, os: Os) -> Option<PathBuf> {
+    let target = shortcut.target.for_os(os)?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    match shortcut.kind {
+        ShortcutKind::Program => Some(PathBuf::from(target)),
+        ShortcutKind::Folder => Some(expand_home(target)),
+        ShortcutKind::Url | ShortcutKind::Command => None,
+    }
+}
+
+pub fn reveal(platform: &dyn Platform, shortcut: &Shortcut) -> Result<()> {
+    let path = local_path(shortcut, platform.os()).ok_or(ShortcutError::NoTarget)?;
+    platform.reveal_path(&path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +415,31 @@ mod tests {
         assert!(matches(&s, "vs"));
         assert!(matches(&s, "dev"));
         assert!(!matches(&s, "zzz"));
+    }
+
+    #[test]
+    fn local_path_and_reveal_cover_programs_and_folders() {
+        let program = shortcut("a", ShortcutKind::Program, " C:\\app.exe ", "");
+        let folder = shortcut("b", ShortcutKind::Folder, "C:\\Pasta", "");
+        let url = shortcut("c", ShortcutKind::Url, "exemplo.com", "");
+        assert_eq!(
+            local_path(&program, Os::Windows),
+            Some(PathBuf::from("C:\\app.exe"))
+        );
+        assert_eq!(
+            local_path(&folder, Os::Windows),
+            Some(PathBuf::from("C:\\Pasta"))
+        );
+        assert_eq!(local_path(&url, Os::Windows), None);
+        let platform = FakePlatform::new(Os::Windows);
+        reveal(&platform, &folder).unwrap();
+        assert!(matches!(
+            reveal(&platform, &url),
+            Err(ShortcutError::NoTarget)
+        ));
+        assert_eq!(
+            platform.calls(),
+            vec![PlatformCall::RevealPath(PathBuf::from("C:\\Pasta"))]
+        );
     }
 }

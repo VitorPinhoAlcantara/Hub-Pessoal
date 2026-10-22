@@ -1,16 +1,19 @@
 use hub_core::platform::Os;
 use hub_core::shortcuts::{Shortcut, ShortcutKind};
+use hub_ui_kit::iced::widget::image::Handle;
 use hub_ui_kit::iced::widget::{
-    Column, Row, button, column, container, row, scrollable, space, text,
+    Column, Row, button, column, container, image, mouse_area, row, scrollable, space, text,
 };
 use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
 
-use crate::{FormMessage, Message, Modal, ShortcutForm, Shortcuts, Suggest};
+use crate::{Apps, FormMessage, Message, Modal, ShortcutForm, Shortcuts, VISIBLE_APPS, ellipsize};
 
-const TILE_WIDTH: f32 = 190.0;
+const TILE_SIZE: f32 = 144.0;
+const TILE_ICON: f32 = 44.0;
+const PATH_CHARS: usize = 22;
 
 fn kind_icon(kind: ShortcutKind) -> (Icon, Color) {
     match kind {
@@ -18,6 +21,22 @@ fn kind_icon(kind: ShortcutKind) -> (Icon, Color) {
         ShortcutKind::Folder => (Icon::Folder, WARNING),
         ShortcutKind::Url => (Icon::Link, SUCCESS),
         ShortcutKind::Command => (Icon::Command, KIND_ROUTINE),
+    }
+}
+
+fn symbol<'a>(kind: ShortcutKind, size: f32) -> Element<'a, Message> {
+    let (glyph, color) = kind_icon(kind);
+    container(icon(glyph, size * 0.55, color))
+        .center_x(size)
+        .center_y(size)
+        .style(style::badge(color))
+        .into()
+}
+
+fn picture<'a>(handle: Option<&Handle>, kind: ShortcutKind, size: f32) -> Element<'a, Message> {
+    match handle {
+        Some(handle) => image(handle.clone()).width(size).height(size).into(),
+        None => symbol(kind, size),
     }
 }
 
@@ -45,7 +64,6 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
         title("Atalhos"),
         space().width(Length::Fill),
         search,
-        icon_label_button(Icon::App, "Sugerir programas", Some(Message::SuggestOpened)),
         primary_icon_button(Icon::Plus, "Novo atalho", Some(Message::NewShortcut)),
     ]
     .spacing(units(2))
@@ -76,11 +94,7 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
             column![
                 icon(Icon::Shortcuts, 32.0, TEXT_SECONDARY),
                 muted("Nenhum atalho ainda."),
-                row![
-                    ghost_button("Sugerir programas", Some(Message::SuggestOpened)),
-                    primary_button("Criar atalho", Some(Message::NewShortcut)),
-                ]
-                .spacing(units(2)),
+                primary_button("Criar atalho", Some(Message::NewShortcut)),
             ]
             .spacing(units(3))
             .align_x(Alignment::Center),
@@ -100,25 +114,22 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
                 .fold(Column::new().spacing(units(5)), |col, (group, items)| {
                     let tiles = items
                         .into_iter()
-                        .fold(Row::new().spacing(units(2)), |r, (index, shortcut)| {
-                            r.push(tile(section.os(), index, shortcut))
+                        .fold(Row::new().spacing(units(3)), |r, (index, shortcut)| {
+                            r.push(tile(section, index, shortcut))
                         })
                         .wrap()
-                        .vertical_spacing(units(2));
+                        .vertical_spacing(units(3));
                     col.push(column![heading(group), tiles].spacing(units(2)))
                 }),
         )
     };
-    let base = panel(content.push(body));
+    let area = mouse_area(container(body).width(Length::Fill).height(Length::Fill))
+        .on_right_press(Message::AreaMenu);
+    let base = panel(content.push(area));
 
     match section.modal() {
         None => base.into(),
-        Some(Modal::Form(form)) => modal(
-            base,
-            form_view(form, section.known_groups(), section.form_error()),
-            Message::ModalClosed,
-        ),
-        Some(Modal::Suggest(suggest)) => modal(base, suggest_view(suggest), Message::ModalClosed),
+        Some(Modal::Form(form)) => modal(base, form_view(section, form), Message::ModalClosed),
         Some(Modal::ConfirmDelete(index)) => {
             let name = section
                 .shortcuts()
@@ -140,35 +151,46 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
     }
 }
 
-fn tile(os: Os, index: usize, shortcut: &Shortcut) -> Element<'_, Message> {
-    let (glyph, color) = kind_icon(shortcut.kind);
-    let target = shortcut.target.for_os(os);
+fn tile<'a>(section: &'a Shortcuts, index: usize, shortcut: &'a Shortcut) -> Element<'a, Message> {
+    let target = shortcut.target.for_os(section.os());
     let available = target.is_some();
-    let badge_icon = container(icon(glyph, ICON_SIZE, color))
-        .padding(units(2))
-        .style(style::badge(color));
-    let tools = row![
-        icon_button(Icon::Edit, TEXT_SECONDARY, Some(Message::Edit(index))),
-        icon_button(Icon::Trash, TEXT_SECONDARY, Some(Message::AskDelete(index))),
-    ];
+    let path = target
+        .map(|t| ellipsize(t, PATH_CHARS))
+        .unwrap_or_else(|| "Sem alvo neste sistema".to_string());
     let content = column![
-        row![badge_icon, space().width(Length::Fill), tools].align_y(Alignment::Start),
-        body(shortcut.name.as_str()).color(if available {
-            TEXT_PRIMARY
-        } else {
-            TEXT_SECONDARY
-        }),
-        text(target.unwrap_or("Sem alvo neste sistema"))
+        picture(section.shortcut_icon(shortcut), shortcut.kind, TILE_ICON),
+        text(shortcut.name.as_str())
+            .size(FONT_SIZE)
+            .color(if available {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            })
+            .align_x(text::Alignment::Center)
+            .width(Length::Fill)
+            .height(Length::Fixed(FONT_SIZE * 2.6)),
+        text(path)
             .size(FONT_SIZE_SMALL)
             .color(TEXT_SECONDARY)
+            .align_x(text::Alignment::Center)
+            .width(Length::Fill)
             .wrapping(text::Wrapping::None),
     ]
-    .spacing(units(2));
-    button(container(content).clip(true))
-        .padding(units(3))
-        .width(TILE_WIDTH)
-        .style(style::selectable(false))
-        .on_press_maybe(available.then_some(Message::Open(index)))
+    .spacing(units(2))
+    .align_x(Alignment::Center);
+    let card = button(
+        container(content)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .clip(true),
+    )
+    .padding(units(3))
+    .width(TILE_SIZE)
+    .height(TILE_SIZE)
+    .style(style::selectable(false))
+    .on_press_maybe(available.then_some(Message::Open(index)));
+    mouse_area(card)
+        .on_right_press(Message::CardMenu(index))
         .into()
 }
 
@@ -176,11 +198,71 @@ fn form_message(message: FormMessage) -> Message {
     Message::Form(message)
 }
 
-fn form_view<'a>(
-    form: &'a ShortcutForm,
-    groups: Vec<String>,
-    error: Option<&'a str>,
-) -> Element<'a, Message> {
+fn app_picker(section: &Shortcuts) -> Element<'_, Message> {
+    let list: Element<'_, Message> = match section.apps() {
+        Apps::Idle | Apps::Loading => container(muted("Procurando programas instalados"))
+            .padding([units(4), 0.0])
+            .center_x(Length::Fill)
+            .into(),
+        Apps::Failed(error) => container(body(error.as_str()).color(DANGER))
+            .padding([units(4), 0.0])
+            .center_x(Length::Fill)
+            .into(),
+        Apps::Ready(_) => {
+            let items = section.visible_apps();
+            if items.is_empty() {
+                container(muted("Nenhum programa encontrado."))
+                    .padding([units(4), 0.0])
+                    .center_x(Length::Fill)
+                    .into()
+            } else {
+                let full = items.len() == VISIBLE_APPS;
+                let mut rows =
+                    items
+                        .into_iter()
+                        .fold(Column::new().spacing(2), |col, (index, app)| {
+                            let path = std::path::Path::new(&app.target);
+                            col.push(
+                                button(
+                                    row![
+                                        picture(section.icon(path), ShortcutKind::Program, 24.0),
+                                        body(app.name.as_str()).width(Length::Fill),
+                                    ]
+                                    .spacing(units(3))
+                                    .align_y(Alignment::Center),
+                                )
+                                .padding([units(1), units(2)])
+                                .width(Length::Fill)
+                                .style(style::list_item)
+                                .on_press(Message::AppPicked(index)),
+                            )
+                        });
+                if full {
+                    rows = rows.push(
+                        container(small("Digite para refinar a busca").color(TEXT_SECONDARY))
+                            .padding([units(1), units(2)]),
+                    );
+                }
+                scrollable(container(rows).padding(Padding::default().right(units(2))))
+                    .height(200)
+                    .style(style::scroll)
+                    .into()
+            }
+        }
+    };
+    column![
+        text_field(
+            "Buscar programa instalado",
+            section.app_query(),
+            Message::AppQueryChanged
+        ),
+        container(list).padding(units(1)).style(style::elevated),
+    ]
+    .spacing(units(2))
+    .into()
+}
+
+fn form_view<'a>(section: &'a Shortcuts, form: &'a ShortcutForm) -> Element<'a, Message> {
     let kinds = ShortcutKind::ALL
         .into_iter()
         .fold(Row::new().spacing(units(1)), |r, kind| {
@@ -205,7 +287,8 @@ fn form_view<'a>(
         ShortcutKind::Url => ("https://exemplo.com", "https://exemplo.com"),
         ShortcutKind::Command => ("comando do cmd", "comando do shell"),
     };
-    let group_chips = groups
+    let group_chips = section
+        .known_groups()
         .into_iter()
         .fold(Row::new().spacing(units(1)), |r, group| {
             let active = form.group == group;
@@ -223,39 +306,53 @@ fn form_view<'a>(
         } else {
             "Novo atalho"
         }),
-        labeled(
-            "Nome",
-            text_field("Ex.: VS Code", &form.name, |v| {
-                form_message(FormMessage::NameChanged(v))
-            })
-        ),
         labeled("Tipo", kinds),
-        labeled(
-            "Alvo no Windows",
-            text_field(hint.0, &form.windows, |v| {
-                form_message(FormMessage::WindowsChanged(v))
-            })
-        ),
-        labeled(
-            "Alvo no Linux",
-            text_field(hint.1, &form.linux, |v| {
-                form_message(FormMessage::LinuxChanged(v))
-            })
-        ),
-        labeled(
-            "Grupo",
-            column![
-                text_field("Geral", &form.group, |v| {
-                    form_message(FormMessage::GroupChanged(v))
-                })
-                .on_submit(Message::FormSaved),
-                group_chips,
-            ]
-            .spacing(units(2))
-        ),
     ]
     .spacing(units(4));
-    if let Some(error) = error {
+    if form.kind == ShortcutKind::Program {
+        col = col.push(labeled("Programa instalado", app_picker(section)));
+    }
+    col = col.push(labeled(
+        "Nome",
+        text_field("Ex.: VS Code", &form.name, |v| {
+            form_message(FormMessage::NameChanged(v))
+        }),
+    ));
+    let windows = text_field(hint.0, &form.windows, |v| {
+        form_message(FormMessage::WindowsChanged(v))
+    });
+    let linux = text_field(hint.1, &form.linux, |v| {
+        form_message(FormMessage::LinuxChanged(v))
+    });
+    col = col.push(labeled("Alvo no Windows", windows));
+    col = col.push(labeled("Alvo no Linux", linux));
+    if matches!(form.kind, ShortcutKind::Program | ShortcutKind::Folder) {
+        let system = match section.os() {
+            Os::Windows => "Windows",
+            Os::Linux => "Linux",
+        };
+        col = col.push(
+            row![
+                icon_label_button(Icon::File, "Escolher arquivo", Some(Message::PickFile)),
+                icon_label_button(Icon::Folder, "Escolher pasta", Some(Message::PickFolder)),
+                small(format!("Preenche o alvo no {system}")).color(TEXT_SECONDARY),
+            ]
+            .spacing(units(2))
+            .align_y(Alignment::Center),
+        );
+    }
+    col = col.push(labeled(
+        "Grupo",
+        column![
+            text_field("Geral", &form.group, |v| {
+                form_message(FormMessage::GroupChanged(v))
+            })
+            .on_submit(Message::FormSaved),
+            group_chips,
+        ]
+        .spacing(units(2)),
+    ));
+    if let Some(error) = section.form_error() {
         col = col.push(body(error).color(DANGER));
     }
     col = col.push(
@@ -275,74 +372,6 @@ fn form_view<'a>(
     );
     scrollable(container(col).padding(Padding::default().right(units(2))))
         .style(style::scroll)
-        .width(480)
+        .width(520)
         .into()
-}
-
-fn suggest_view(suggest: &Suggest) -> Element<'_, Message> {
-    let list: Element<'_, Message> = match &suggest.apps {
-        None => container(muted("Procurando programas instalados"))
-            .padding([units(6), 0.0])
-            .center_x(Length::Fill)
-            .into(),
-        Some(_) => {
-            let items = suggest.filtered();
-            if items.is_empty() {
-                container(muted(
-                    suggest
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "Nenhum programa encontrado.".to_string()),
-                ))
-                .padding([units(6), 0.0])
-                .center_x(Length::Fill)
-                .into()
-            } else {
-                scrollable(
-                    container(items.into_iter().fold(
-                        Column::new().spacing(units(1)),
-                        |col, (index, app)| {
-                            col.push(
-                                button(
-                                    row![
-                                        icon(Icon::App, ICON_SIZE - 4.0, ACCENT),
-                                        column![
-                                            body(app.name.as_str()),
-                                            text(app.target.as_str())
-                                                .size(FONT_SIZE_SMALL)
-                                                .color(TEXT_SECONDARY)
-                                                .wrapping(text::Wrapping::None),
-                                        ]
-                                        .spacing(2),
-                                    ]
-                                    .spacing(units(3))
-                                    .align_y(Alignment::Center),
-                                )
-                                .padding([units(2), units(3)])
-                                .width(Length::Fill)
-                                .style(style::list_item)
-                                .on_press(Message::AppPicked(index)),
-                            )
-                        },
-                    ))
-                    .padding(Padding::default().right(units(2))),
-                )
-                .height(380)
-                .style(style::scroll)
-                .into()
-            }
-        }
-    };
-    column![
-        title("Sugerir programas"),
-        text_field("Buscar", &suggest.query, Message::SuggestQueryChanged),
-        list,
-        row![
-            space().width(Length::Fill),
-            ghost_button("Fechar", Some(Message::ModalClosed))
-        ],
-    ]
-    .spacing(units(4))
-    .width(480)
-    .into()
 }

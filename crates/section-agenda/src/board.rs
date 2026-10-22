@@ -1,4 +1,4 @@
-use hub_core::agenda::{Priority, Reminder, Task};
+use hub_core::agenda::{Priority, Projection, Reminder, Task};
 use hub_core::chrono::{Datelike, Months, NaiveDate, NaiveTime, TimeDelta, Weekday};
 
 pub const PAST_DAYS: i64 = 2;
@@ -27,6 +27,7 @@ impl CardKind {
 pub enum CardId {
     Task(i64),
     Reminder(i64),
+    Projection { routine: i64, date: NaiveDate },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,9 +39,30 @@ pub struct Card {
     pub time: Option<NaiveTime>,
     pub done: bool,
     pub high_priority: bool,
+    pub projected: bool,
 }
 
 impl Card {
+    pub fn from_projection(projection: &Projection) -> Self {
+        Self {
+            id: CardId::Projection {
+                routine: projection.routine.id,
+                date: projection.date,
+            },
+            kind: CardKind::Routine,
+            title: projection.routine.title.clone(),
+            date: Some(projection.date),
+            time: projection.routine.time,
+            done: false,
+            high_priority: false,
+            projected: true,
+        }
+    }
+
+    pub fn can_move(&self) -> bool {
+        !self.projected && matches!(self.kind, CardKind::Appointment | CardKind::Reminder)
+    }
+
     pub fn from_task(task: &Task) -> Self {
         Self {
             id: CardId::Task(task.id),
@@ -54,6 +76,7 @@ impl Card {
             time: task.time,
             done: task.is_completed(),
             high_priority: task.priority == Priority::High,
+            projected: false,
         }
     }
 
@@ -67,6 +90,7 @@ impl Card {
             time: Some(at.time()),
             done: reminder.fired_at.is_some(),
             high_priority: false,
+            projected: false,
         }
     }
 
@@ -86,6 +110,7 @@ pub fn build_days(
     to: NaiveDate,
     tasks: &[Task],
     reminders: &[Reminder],
+    projections: &[Projection],
 ) -> Vec<DayColumn> {
     let mut days: Vec<DayColumn> = from
         .iter_days()
@@ -98,7 +123,8 @@ pub fn build_days(
     let cards = tasks
         .iter()
         .map(Card::from_task)
-        .chain(reminders.iter().map(Card::from_reminder));
+        .chain(reminders.iter().map(Card::from_reminder))
+        .chain(projections.iter().map(Card::from_projection));
     for card in cards {
         let Some(date) = card.date else { continue };
         if let Some(day) = days.iter_mut().find(|d| d.date == date) {
@@ -246,7 +272,7 @@ mod tests {
             snoozed_until: None,
             notes: String::new(),
         };
-        let days = build_days(d("2026-10-21"), d("2026-10-22"), &tasks, &[reminder]);
+        let days = build_days(d("2026-10-21"), d("2026-10-22"), &tasks, &[reminder], &[]);
         assert_eq!(days.len(), 2);
         let ids: Vec<CardId> = days[0].cards.iter().map(|c| c.id).collect();
         assert_eq!(ids, [CardId::Task(2), CardId::Task(3), CardId::Task(1)]);

@@ -66,12 +66,60 @@ impl Default for McpConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub const ZOOM_MIN: f32 = 0.6;
+pub const ZOOM_MAX: f32 = 2.0;
+pub const ZOOM_STEP: f32 = 0.1;
+pub const CHAT_WIDTH_MIN: f32 = 300.0;
+pub const CHAT_WIDTH_MAX: f32 = 900.0;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    pub zoom: f32,
+    #[serde(rename = "largura_chat")]
+    pub chat_width: f32,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            chat_width: 380.0,
+        }
+    }
+}
+
+impl AppearanceConfig {
+    pub fn clamped_zoom(&self) -> f32 {
+        if self.zoom.is_finite() {
+            self.zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+        } else {
+            1.0
+        }
+    }
+
+    pub fn step_zoom(&mut self, steps: i32) {
+        let next = self.clamped_zoom() + ZOOM_STEP * steps as f32;
+        self.zoom = ((next * 10.0).round() / 10.0).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
+
+    pub fn clamped_chat_width(&self) -> f32 {
+        if self.chat_width.is_finite() {
+            self.chat_width.clamp(CHAT_WIDTH_MIN, CHAT_WIDTH_MAX)
+        } else {
+            380.0
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     #[serde(rename = "geral")]
     pub general: GeneralConfig,
     pub mcp: McpConfig,
+    #[serde(rename = "aparencia")]
+    pub appearance: AppearanceConfig,
 }
 
 impl Config {
@@ -135,6 +183,30 @@ mod tests {
     fn missing_renderer_defaults_to_gpu() {
         let config = Config::parse(Path::new("x"), "").unwrap();
         assert_eq!(config.general.renderer, Renderer::Gpu);
+    }
+
+    #[test]
+    fn zoom_steps_are_rounded_and_limited() {
+        let mut appearance = AppearanceConfig::default();
+        appearance.step_zoom(1);
+        assert_eq!(appearance.zoom, 1.1);
+        appearance.step_zoom(-5);
+        assert_eq!(appearance.zoom, 0.6);
+        appearance.step_zoom(-1);
+        assert_eq!(appearance.zoom, ZOOM_MIN);
+        appearance.zoom = 50.0;
+        assert_eq!(appearance.clamped_zoom(), ZOOM_MAX);
+        appearance.chat_width = 10.0;
+        assert_eq!(appearance.clamped_chat_width(), CHAT_WIDTH_MIN);
+        let parsed = Config::parse(
+            Path::new("x"),
+            "[aparencia]
+zoom = 1.3
+",
+        )
+        .unwrap();
+        assert_eq!(parsed.appearance.zoom, 1.3);
+        assert_eq!(parsed.appearance.chat_width, 380.0);
     }
 
     #[test]

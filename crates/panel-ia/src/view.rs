@@ -1,14 +1,18 @@
+use hub_ui_kit::iced::keyboard::{Key, key};
+use hub_ui_kit::iced::widget::text_editor::{Binding, KeyPress};
 use hub_ui_kit::iced::widget::{
-    Column, button, column, container, markdown, row, scrollable, space, text,
+    Column, Row, button, column, container, image, markdown, mouse_area, row, scrollable, space,
+    text, text_editor,
 };
 use hub_ui_kit::iced::{Alignment, Element, Font, Length, Padding};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
 
-use crate::{Chat, Item, Message, PROVIDERS, short_tool_name};
+use crate::{Attachment, Chat, Item, Message, PROVIDERS, short_tool_name};
 
 pub const PANEL_WIDTH: f32 = 380.0;
+const PREVIEW_SIZE: f32 = 64.0;
 
 fn markdown_settings() -> markdown::Settings {
     markdown::Settings::with_text_size(
@@ -20,7 +24,7 @@ fn markdown_settings() -> markdown::Settings {
 fn bubble<'a>(content: impl Into<Element<'a, Message>>, user: bool) -> Element<'a, Message> {
     let inner = container(content)
         .padding([units(2), units(3)])
-        .max_width(PANEL_WIDTH - units(14))
+        .max_width(f32::MAX)
         .style(if user { style::banner } else { style::elevated });
     let row = if user {
         row![space().width(Length::Fill), inner]
@@ -28,6 +32,35 @@ fn bubble<'a>(content: impl Into<Element<'a, Message>>, user: bool) -> Element<'
         row![inner, space().width(Length::Fill)]
     };
     row.into()
+}
+
+fn previews<'a>(attachments: &'a [Attachment], removable: bool) -> Element<'a, Message> {
+    attachments
+        .iter()
+        .enumerate()
+        .fold(Row::new().spacing(units(2)), |r, (index, attachment)| {
+            let thumb = image(attachment.preview.clone())
+                .width(PREVIEW_SIZE)
+                .height(PREVIEW_SIZE)
+                .content_fit(hub_ui_kit::iced::ContentFit::Cover);
+            let cell: Element<'a, Message> = if removable {
+                column![
+                    thumb,
+                    button(text("remover").size(FONT_SIZE_SMALL).color(TEXT_SECONDARY))
+                        .padding(0)
+                        .style(style::ghost)
+                        .on_press(Message::RemoveAttachment(index)),
+                ]
+                .spacing(units(1))
+                .align_x(Alignment::Center)
+                .into()
+            } else {
+                thumb.into()
+            };
+            r.push(cell)
+        })
+        .wrap()
+        .into()
 }
 
 fn tool_card<'a>(
@@ -70,17 +103,61 @@ fn tool_card<'a>(
     .into()
 }
 
-fn item_view(item: &Item) -> Element<'_, Message> {
-    match item {
-        Item::User(prompt) => bubble(body(prompt.as_str()), true),
+fn small_action<'a>(glyph: Icon, label: &'a str, message: Message) -> Element<'a, Message> {
+    button(
+        row![
+            icon(glyph, ICON_SIZE - 8.0, TEXT_SECONDARY),
+            text(label).size(FONT_SIZE_SMALL).color(TEXT_SECONDARY),
+        ]
+        .spacing(units(1))
+        .align_y(Alignment::Center),
+    )
+    .padding([0.0, units(1)])
+    .style(style::ghost)
+    .on_press(message)
+    .into()
+}
+
+fn item_view<'a>(chat: &'a Chat, index: usize, item: &'a Item) -> Element<'a, Message> {
+    let copied = chat.copied() == Some(index);
+    let copy_label = if copied { "Copiado" } else { "Copiar" };
+    let content: Element<'a, Message> = match item {
+        Item::User { text, attachments } => {
+            let mut inner = Column::new().spacing(units(2));
+            if !attachments.is_empty() {
+                inner = inner.push(previews(attachments, false));
+            }
+            if !text.is_empty() {
+                inner = inner.push(body(text.as_str()));
+            }
+            let mut col = column![bubble(inner, true)].spacing(units(1));
+            if chat.cancelled() == Some(index) && !chat.is_running() {
+                col = col.push(row![
+                    space().width(Length::Fill),
+                    small_action(Icon::Edit, "Editar e reenviar", Message::EditResend(index)),
+                ]);
+            }
+            col.into()
+        }
         Item::Assistant { content, raw } => {
             if raw.is_empty() {
                 bubble(muted("Pensando"), false)
             } else {
-                bubble(
+                let answer = bubble(
                     markdown::view(content.items(), markdown_settings()).map(Message::LinkClicked),
                     false,
-                )
+                );
+                let streaming = chat.is_running() && index + 1 == chat.items().len();
+                if streaming {
+                    answer
+                } else {
+                    column![
+                        answer,
+                        row![small_action(Icon::Copy, copy_label, Message::Copy(index))],
+                    ]
+                    .spacing(units(1))
+                    .into()
+                }
             }
         }
         Item::Tool {
@@ -104,7 +181,20 @@ fn item_view(item: &Item) -> Element<'_, Message> {
         .width(Length::Fill)
         .style(style::outlined(DANGER, false))
         .into(),
+    };
+    mouse_area(content)
+        .on_right_press(Message::ItemMenu(index))
+        .into()
+}
+
+fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
+    if matches!(press.status, text_editor::Status::Focused { .. })
+        && matches!(press.key, Key::Named(key::Named::Enter))
+        && !press.modifiers.shift()
+    {
+        return Some(Binding::Custom(Message::Send));
     }
+    Binding::from_key_press(press)
 }
 
 pub fn view(chat: &Chat) -> Element<'_, Message> {
@@ -143,6 +233,10 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
                 small("me lembra de beber água em 1 minuto"),
                 small("o que tenho na agenda amanhã?"),
                 small("cria um atalho para o GitHub"),
+                space().height(units(2)),
+                small("Enter envia, Shift+Enter quebra a linha."),
+                small("Arraste imagens para cá ou use o clipe para anexar."),
+                small("Clique com o botão direito numa mensagem para copiar ou reenviar."),
             ]
             .spacing(units(2)),
         )
@@ -154,8 +248,9 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
             container(
                 chat.items()
                     .iter()
-                    .fold(Column::new().spacing(units(3)), |col, item| {
-                        col.push(item_view(item))
+                    .enumerate()
+                    .fold(Column::new().spacing(units(3)), |col, (index, item)| {
+                        col.push(item_view(chat, index, item))
                     }),
             )
             .padding(Padding::default().right(units(3))),
@@ -176,19 +271,32 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         button(icon(Icon::Send, ICON_SIZE - 2.0, BG_BASE))
             .padding(units(2))
             .style(style::primary)
-            .on_press_maybe((!chat.input().trim().is_empty()).then_some(Message::Send))
+            .on_press_maybe(chat.can_send().then_some(Message::Send))
             .into()
     };
-    let composer = row![
-        text_field("Mensagem", chat.input(), Message::InputChanged).on_submit(Message::Send),
-        action,
-    ]
-    .spacing(units(2))
-    .align_y(Alignment::Center);
+    let editor = text_editor(chat.composer())
+        .placeholder("Mensagem (Shift+Enter quebra a linha)")
+        .on_action(Message::InputEdited)
+        .key_binding(composer_binding)
+        .padding([units(2), units(3)])
+        .size(FONT_SIZE)
+        .min_height(units(9))
+        .max_height(units(40))
+        .style(style::editor);
+    let attach = icon_button(Icon::Attach, TEXT_SECONDARY, Some(Message::AttachImages));
+    let mut composer = Column::new().spacing(units(2));
+    if !chat.attachments().is_empty() {
+        composer = composer.push(previews(chat.attachments(), true));
+    }
+    composer = composer.push(
+        row![attach, editor, action]
+            .spacing(units(2))
+            .align_y(Alignment::End),
+    );
 
     container(column![header, container(messages).height(Length::Fill), composer].spacing(units(3)))
         .padding(units(4))
-        .width(PANEL_WIDTH)
+        .width(chat.width())
         .height(Length::Fill)
         .style(style::panel)
         .into()

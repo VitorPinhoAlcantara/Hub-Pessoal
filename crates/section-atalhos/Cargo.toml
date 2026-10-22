@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 hub-core.workspace = true
 hub-ui-kit.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

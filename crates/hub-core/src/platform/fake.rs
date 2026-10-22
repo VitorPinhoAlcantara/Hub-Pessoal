@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
-    ActionHandler, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
+    ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
     TrayEvent, TrayHandler, TrayImage,
 };
 
@@ -14,6 +14,7 @@ pub enum PlatformCall {
     OpenUrl(String),
     ListInstalledApps,
     RunCommand(String),
+    RevealPath(PathBuf),
     Notify(Notification),
     SpawnTray,
 }
@@ -132,6 +133,15 @@ impl Platform for FakePlatform {
         Ok(())
     }
 
+    fn file_icon(&self, _target: &Path) -> Option<FileIcon> {
+        None
+    }
+
+    fn reveal_path(&self, target: &Path) -> Result<(), PlatformError> {
+        self.record(PlatformCall::RevealPath(target.to_path_buf()));
+        Ok(())
+    }
+
     fn notify(
         &self,
         notification: Notification,
@@ -194,6 +204,17 @@ mod tests {
         assert!(!platform.is_fullscreen_app_running());
         platform.set_fullscreen(true);
         assert!(platform.is_fullscreen_app_running());
+    }
+
+    #[test]
+    fn reveal_is_recorded_and_icons_are_absent() {
+        let platform = FakePlatform::default();
+        assert!(platform.file_icon(Path::new("app.exe")).is_none());
+        platform.reveal_path(Path::new("pasta/app.exe")).unwrap();
+        assert_eq!(
+            platform.calls(),
+            vec![PlatformCall::RevealPath(PathBuf::from("pasta/app.exe"))]
+        );
     }
 
     #[test]

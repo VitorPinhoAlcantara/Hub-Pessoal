@@ -273,3 +273,59 @@ async fn scheduled_timeout_notifies() {
     assert_eq!(platform.notifications().len(), 1);
     assert!(platform.notifications()[0].title.contains("Teste"));
 }
+
+#[test]
+fn code_is_read_and_written_per_os() {
+    let temp = tempfile::tempdir().unwrap();
+    create(temp.path(), new_script("Codigo")).unwrap();
+    let mut store = ScriptStore::default();
+    let script = store.get(temp.path(), Os::Windows, "codigo").unwrap();
+    assert_eq!(
+        read_code(temp.path(), &script.meta, Os::Windows)
+            .unwrap()
+            .as_deref(),
+        Some("Write-Output oi\n")
+    );
+    write_code(temp.path(), &script.meta, Os::Linux, "echo novo\n").unwrap();
+    assert_eq!(
+        read_code(temp.path(), &script.meta, Os::Linux)
+            .unwrap()
+            .as_deref(),
+        Some("echo novo\n")
+    );
+    let mut only_windows = script.meta.clone();
+    only_windows.file = PerOs::split(Some("codigo.ps1".into()), None);
+    assert_eq!(
+        read_code(temp.path(), &only_windows, Os::Linux).unwrap(),
+        None
+    );
+    assert!(matches!(
+        write_code(temp.path(), &only_windows, Os::Linux, "x"),
+        Err(ScriptError::NoFileForOs)
+    ));
+}
+
+#[test]
+fn code_file_names_cannot_escape_the_folder() {
+    assert!(validate_file_name("limpar.ps1").is_ok());
+    for bad in ["../x.ps1", "a\\b.ps1", "C:x.ps1", "..", "", "outro.toml"] {
+        assert!(
+            matches!(
+                validate_file_name(bad),
+                Err(ScriptError::InvalidFileName(_))
+            ),
+            "{bad}"
+        );
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let meta = ScriptMeta {
+        name: "x".into(),
+        description: String::new(),
+        file: PerOs::Same("../fora.sh".into()),
+        confirm: false,
+        timeout_secs: DEFAULT_TIMEOUT,
+        schedule: None,
+        active: false,
+    };
+    assert!(write_code(temp.path(), &meta, Os::Linux, "x").is_err());
+}

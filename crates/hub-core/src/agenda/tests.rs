@@ -336,3 +336,94 @@ fn update_reminder_changes_text_and_rearms_when_moved_forward() {
         Err(AgendaError::EmptyTitle)
     ));
 }
+
+#[test]
+fn projections_show_future_routine_days_without_duplicates() {
+    let db = db();
+    let c = db.conn();
+    let now = at("2026-10-21 09:00");
+    create_routine(
+        c,
+        NewRoutine {
+            title: "dia sim dia não".into(),
+            notes: String::new(),
+            recurrence: "cada:2:2026-10-21".parse().unwrap(),
+            time: NaiveTime::from_hms_opt(7, 0, 0),
+        },
+    )
+    .unwrap();
+    let paused = create_routine(
+        c,
+        NewRoutine {
+            title: "pausada".into(),
+            notes: String::new(),
+            recurrence: Recurrence::Daily,
+            time: None,
+        },
+    )
+    .unwrap();
+    set_routine_active(c, paused.id, false).unwrap();
+    generate_routine_tasks(c, day("2026-10-21"), now).unwrap();
+    let list =
+        routine_projections(c, day("2026-10-19"), day("2026-10-27"), day("2026-10-21")).unwrap();
+    let dates: Vec<String> = list.iter().map(|p| p.date.to_string()).collect();
+    assert_eq!(dates, ["2026-10-23", "2026-10-25", "2026-10-27"]);
+    assert!(list.iter().all(|p| p.routine.title == "dia sim dia não"));
+}
+
+#[test]
+fn moving_keeps_time_and_updates_reminders() {
+    let db = db();
+    let c = db.conn();
+    let now = at("2026-10-21 09:00");
+    let task = create_task(c, new_task("x", Some("2026-10-21"), Some("15:00")), now).unwrap();
+    let moved = move_task(c, task.id, Some(day("2026-10-24"))).unwrap();
+    assert_eq!(moved.time, task.time);
+    assert_eq!(next_reminder_time(c).unwrap(), Some(at("2026-10-24 15:00")));
+    let r = create_reminder(c, None, Some("r"), at("2026-10-22 08:30")).unwrap();
+    let moved = move_reminder(c, r.id, day("2026-10-26"), now).unwrap();
+    assert_eq!(moved.effective_time(), at("2026-10-26 08:30"));
+    assert_eq!(pending_reminders(c).unwrap().len(), 2);
+}
+
+#[test]
+fn routines_can_be_updated() {
+    let db = db();
+    let c = db.conn();
+    let routine = create_routine(
+        c,
+        NewRoutine {
+            title: "a".into(),
+            notes: String::new(),
+            recurrence: Recurrence::Daily,
+            time: None,
+        },
+    )
+    .unwrap();
+    let updated = update_routine(
+        c,
+        routine.id,
+        NewRoutine {
+            title: "b".into(),
+            notes: "n".into(),
+            recurrence: "semana:2".parse().unwrap(),
+            time: NaiveTime::from_hms_opt(6, 0, 0),
+        },
+    )
+    .unwrap();
+    assert_eq!(updated.title, "b");
+    assert_eq!(updated.recurrence.to_string(), "semana:2");
+    assert!(matches!(
+        update_routine(
+            c,
+            99,
+            NewRoutine {
+                title: "x".into(),
+                notes: String::new(),
+                recurrence: Recurrence::Daily,
+                time: None
+            }
+        ),
+        Err(AgendaError::NotFound(99))
+    ));
+}

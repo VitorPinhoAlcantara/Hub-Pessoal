@@ -19,3 +19,4 @@ Thumbs.db
 .aider*
 .windsurf/
 .github/copilot-instructions.md
+*.exe

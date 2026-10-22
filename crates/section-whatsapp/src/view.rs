@@ -2,7 +2,7 @@ use hub_core::agenda::recurrence::weekday_short;
 use hub_core::chrono::{Datelike, Local, NaiveDateTime};
 use hub_core::whatsapp::{Conversation, Message as ChatMessage};
 use hub_ui_kit::iced::widget::{
-    Column, button, column, container, qr_code, row, scrollable, space, text,
+    Column, button, column, container, mouse_area, qr_code, row, scrollable, space, text,
 };
 use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding};
 use hub_ui_kit::tokens::*;
@@ -51,7 +51,7 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
         Icon::User
     };
     let time = conversation.last_at.map(short_time).unwrap_or_default();
-    button(
+    let item = button(
         row![
             container(icon(avatar_icon, ICON_SIZE - 2.0, WHATSAPP_GREEN))
                 .padding(units(2))
@@ -86,8 +86,10 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
     .padding([units(2), units(3)])
     .width(Length::Fill)
     .style(style::selectable(selected))
-    .on_press(Message::Selected(conversation.jid.clone()))
-    .into()
+    .on_press(Message::Selected(conversation.jid.clone()));
+    mouse_area(item)
+        .on_right_press(Message::ConversationMenu(conversation.jid.clone()))
+        .into()
 }
 
 fn list(section: &WhatsApp) -> Element<'_, Message> {
@@ -164,7 +166,14 @@ fn pairing(section: &WhatsApp) -> Element<'_, Message> {
     let content: Element<'_, Message> = match section.connection() {
         Connection::Qr(data) => column![
             heading("Vincule o WhatsApp"),
-            muted("No celular: WhatsApp, Dispositivos conectados, Conectar um dispositivo."),
+            column![
+                body("1. Abra o WhatsApp no celular."),
+                body("2. Toque em Configurações (iPhone) ou nos três pontos (Android)."),
+                body("3. Entre em Dispositivos conectados e toque em Conectar um dispositivo."),
+                body("4. Aponte a câmera para o código abaixo."),
+            ]
+            .spacing(units(1)),
+            small("O código muda a cada poucos segundos. A sessão fica salva neste computador."),
             container(qr_code(data).cell_size(5))
                 .padding(units(3))
                 .style(|_| container::Style {
@@ -177,6 +186,24 @@ fn pairing(section: &WhatsApp) -> Element<'_, Message> {
                 }),
         ]
         .spacing(units(3))
+        .align_x(Alignment::Center)
+        .into(),
+        Connection::Offline(reason) if reason.starts_with(crate::SIDECAR_MISSING) => column![
+            icon(Icon::Warning, 28.0, WARNING),
+            heading("Falta o componente do WhatsApp"),
+            muted("O hub conversa com o WhatsApp por um programa auxiliar chamado whatsapp-bridge, escrito em Go. Ele precisa estar na mesma pasta do hub."),
+            column![
+                body("1. Instale o Go: winget install GoLang.Go"),
+                body("2. Na pasta do projeto, entre em sidecars/whatsapp-bridge"),
+                body("3. Compile: go build -o whatsapp-bridge.exe ."),
+                body("4. Copie o whatsapp-bridge.exe para a pasta do hub.exe"),
+            ]
+            .spacing(units(1)),
+            small(reason.as_str()),
+            primary_icon_button(Icon::Refresh, "Tentar de novo", Some(Message::Retry)),
+        ]
+        .spacing(units(3))
+        .max_width(560)
         .align_x(Alignment::Center)
         .into(),
         Connection::Offline(reason) => column![
