@@ -255,7 +255,9 @@ pub fn ytdlp_cookie_source(browser: crate::config::BrowserLogin) -> Option<Strin
     use crate::config::BrowserLogin;
     match browser {
         BrowserLogin::None => None,
-        BrowserLogin::Zen => firefox_family_profile(&zen_root()?).map(|p| format!("firefox:{}", p.display())),
+        BrowserLogin::Zen => {
+            firefox_family_profile(&zen_root()?).map(|p| format!("firefox:{}", p.display()))
+        }
         BrowserLogin::Firefox => Some(
             firefox_root()
                 .and_then(|root| firefox_family_profile(&root))
@@ -303,7 +305,11 @@ pub fn firefox_family_profile(root: &Path) -> Option<PathBuf> {
         let Some(path) = path else {
             return;
         };
-        let full = if relative { root.join(&path) } else { PathBuf::from(&path) };
+        let full = if relative {
+            root.join(&path)
+        } else {
+            PathBuf::from(&path)
+        };
         if section.starts_with("Install") {
             install_default.get_or_insert(full);
         } else if section.starts_with("Profile") {

@@ -135,10 +135,7 @@ static TRANSLUCENT_SESSION: AtomicBool = AtomicBool::new(false);
 static TRANSLUCENT_FAILED: AtomicBool = AtomicBool::new(false);
 const TRANSLUCENT_MARKER: &str = "translucido-abrindo";
 
-pub fn guard_translucent_start(
-    paths: &hub_core::HubPaths,
-    config: &mut hub_core::Config,
-) -> bool {
+pub fn guard_translucent_start(paths: &hub_core::HubPaths, config: &mut hub_core::Config) -> bool {
     let marker = paths.data_dir.join(TRANSLUCENT_MARKER);
     let failed = marker.exists() && config.appearance.wallpaper.mode == WallpaperMode::Translucent;
     if failed {
@@ -588,9 +585,11 @@ impl Personalization {
         .padding(units(4))
         .width(Length::Fill)
         .style(hub_ui_kit::style::elevated);
-        let search = text_field("Procurar fonte instalada, por exemplo Cascadia", &self.font_input, move |value| {
-            wrap(Message::FontInput(value))
-        })
+        let search = text_field(
+            "Procurar fonte instalada, por exemplo Cascadia",
+            &self.font_input,
+            move |value| wrap(Message::FontInput(value)),
+        )
         .on_submit(wrap(Message::FontApply))
         .width(360);
         let matches = self.font_matches();
@@ -609,7 +608,11 @@ impl Personalization {
                 .into_iter()
                 .fold(Row::new().spacing(units(2)), |row, name| {
                     let active = self.font_saved == name;
-                    row.push(font_chip(font::intern(&name), active, wrap(Message::FontPick(name))))
+                    row.push(font_chip(
+                        font::intern(&name),
+                        active,
+                        wrap(Message::FontPick(name)),
+                    ))
                 })
                 .wrap()
                 .into()
@@ -706,7 +709,10 @@ impl Personalization {
                     "A janela mostra o que estiver atrás dela, inclusive o Wallpaper Engine animado. Só funciona com o renderizador GPU.",
                 ));
                 let blurs = WindowBlur::ALL.iter().fold(
-                    Row::new().spacing(units(2)).align_y(Alignment::Center).push(muted("Desfoque").width(90)),
+                    Row::new()
+                        .spacing(units(2))
+                        .align_y(Alignment::Center)
+                        .push(muted("Desfoque").width(90)),
                     |row, blur| {
                         row.push(choice(
                             blur.label(),
@@ -719,7 +725,9 @@ impl Personalization {
                 section = section.push(muted(
                     "Leve e Forte usam o desfoque do próprio Windows, com intensidade fixa; o Forte é o acrílico.",
                 ));
-                if config.window_blur != WindowBlur::None && !platform::transparency_effects_enabled() {
+                if config.window_blur != WindowBlur::None
+                    && !platform::transparency_effects_enabled()
+                {
                     section = section.push(
                         body("Os efeitos de transparência do Windows estão desligados, então o desfoque não aparece. Para ligar: Configurações do Windows, Personalização, Cores, Efeitos de transparência.")
                             .color(warning()),

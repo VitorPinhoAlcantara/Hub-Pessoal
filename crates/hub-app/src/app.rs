@@ -1014,7 +1014,10 @@ impl App {
     }
 
     fn apply_window_blur(&self) {
-        let Some(raw) = self.raw_window.filter(|_| appearance::translucent_session()) else {
+        let Some(raw) = self
+            .raw_window
+            .filter(|_| appearance::translucent_session())
+        else {
             return;
         };
         let blur = self.ctx.config().appearance.wallpaper.window_blur;
@@ -1234,10 +1237,7 @@ fn start_mcp(ctx: &HubContext, ephemeral: bool) -> Result<McpServer, String> {
     Ok(server)
 }
 
-fn wallpaper_task(
-    ctx: &HubContext,
-    current: Option<appearance::WallpaperFrame>,
-) -> Task<Message> {
+fn wallpaper_task(ctx: &HubContext, current: Option<appearance::WallpaperFrame>) -> Task<Message> {
     Task::perform(
         appearance::load_wallpaper(ctx.clone(), current),
         Message::WallpaperLoaded,

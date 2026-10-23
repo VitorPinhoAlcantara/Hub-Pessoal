@@ -61,7 +61,11 @@ pub fn installed_families() -> Vec<String> {
     db.load_system_fonts();
     let families: BTreeSet<String> = db
         .faces()
-        .filter_map(|face| face.families.first().map(|(name, _)| name.trim().to_string()))
+        .filter_map(|face| {
+            face.families
+                .first()
+                .map(|(name, _)| name.trim().to_string())
+        })
         .filter(|name| !name.is_empty() && !name.starts_with('.') && !name.starts_with('@'))
         .collect();
     families.into_iter().collect()

@@ -197,12 +197,12 @@ impl raw_window_handle::HasWindowHandle for WindowHandle {
 }
 
 pub(super) fn apply_acrylic(raw_window: u64, tint: (u8, u8, u8, u8)) -> Result<(), PlatformError> {
-    window_vibrancy::apply_acrylic(WindowHandle(raw_window as isize), Some(tint)).map_err(
-        |error| PlatformError::Launch {
+    window_vibrancy::apply_acrylic(WindowHandle(raw_window as isize), Some(tint)).map_err(|error| {
+        PlatformError::Launch {
             target: "efeito acrílico".to_string(),
             reason: error.to_string(),
-        },
-    )
+        }
+    })
 }
 
 pub(super) fn apply_blur(raw_window: u64, tint: (u8, u8, u8, u8)) -> Result<(), PlatformError> {

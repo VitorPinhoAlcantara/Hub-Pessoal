@@ -85,7 +85,10 @@ fn properties_update_status_and_name_favorite() {
 #[test]
 fn commands_wait_for_connection_and_are_flushed() {
     let mut player = player(missing());
-    send(&mut player, [Message::TogglePause, Message::VolumeChanged(30.0)]);
+    send(
+        &mut player,
+        [Message::TogglePause, Message::VolumeChanged(30.0)],
+    );
     assert_eq!(player.queued, vec![Command::TogglePause]);
     let (sender, mut receiver) = futures::channel::mpsc::unbounded();
     send(&mut player, [Message::Mpv(MpvEvent::Connected(sender))]);
@@ -332,7 +335,9 @@ fn finishing_a_track_moves_to_preloaded_next_and_prefetches_again() {
     player.preloaded = Some("b".into());
     send(
         &mut player,
-        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(Some(1))))],
+        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(
+            Some(1),
+        )))],
     );
     assert_eq!(player.index, 1);
     assert_eq!(
@@ -348,7 +353,9 @@ fn finishing_a_track_moves_to_preloaded_next_and_prefetches_again() {
     player.queued.clear();
     send(
         &mut player,
-        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(Some(0))))],
+        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(
+            Some(0),
+        )))],
     );
     assert_eq!(player.index, 1);
     assert!(player.queued.is_empty());
@@ -360,12 +367,18 @@ fn direct_url_is_appended_only_while_still_next() {
     queue_of(&mut player, &["a", "b", "c"], 0);
     send(
         &mut player,
-        [Message::DirectResolved("c".into(), Some("https://cdn/c".into()))],
+        [Message::DirectResolved(
+            "c".into(),
+            Some("https://cdn/c".into()),
+        )],
     );
     assert!(player.queued.is_empty());
     send(
         &mut player,
-        [Message::DirectResolved("b".into(), Some("https://cdn/b".into()))],
+        [Message::DirectResolved(
+            "b".into(),
+            Some("https://cdn/b".into()),
+        )],
     );
     assert_eq!(
         player.queued,
@@ -377,7 +390,10 @@ fn direct_url_is_appended_only_while_still_next() {
     player.queued.clear();
     send(
         &mut player,
-        [Message::DirectResolved("b".into(), Some("https://cdn/b2".into()))],
+        [Message::DirectResolved(
+            "b".into(),
+            Some("https://cdn/b2".into()),
+        )],
     );
     assert!(player.queued.is_empty());
 }
@@ -419,15 +435,27 @@ fn skip_moves_between_favorites_when_queue_has_no_neighbor() {
         "https://youtu.be/c".into(),
     ];
     player.current_url = Some("https://youtu.be/b".into());
-    assert_eq!(player.favorite_neighbor(1).as_deref(), Some("https://youtu.be/c"));
-    assert_eq!(player.favorite_neighbor(-1).as_deref(), Some("https://youtu.be/a"));
+    assert_eq!(
+        player.favorite_neighbor(1).as_deref(),
+        Some("https://youtu.be/c")
+    );
+    assert_eq!(
+        player.favorite_neighbor(-1).as_deref(),
+        Some("https://youtu.be/a")
+    );
     player.current_url = Some("https://youtu.be/c".into());
     assert_eq!(player.favorite_neighbor(1), None);
 }
 
 #[test]
 fn placeholder_titles_do_not_name_favorites() {
-    assert!(hub_core::player::is_placeholder_title("watch?v=S02YkyF9u1o"));
-    assert!(hub_core::player::is_placeholder_title("https://www.youtube.com/watch?v=a"));
-    assert!(!hub_core::player::is_placeholder_title("Flegrea e Hornacis"));
+    assert!(hub_core::player::is_placeholder_title(
+        "watch?v=S02YkyF9u1o"
+    ));
+    assert!(hub_core::player::is_placeholder_title(
+        "https://www.youtube.com/watch?v=a"
+    ));
+    assert!(!hub_core::player::is_placeholder_title(
+        "Flegrea e Hornacis"
+    ));
 }

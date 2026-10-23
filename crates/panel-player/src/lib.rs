@@ -334,7 +334,12 @@ impl Player {
             .playlist
             .iter()
             .enumerate()
-            .map(|(index, entry)| (entry.label().to_string(), self.status.playlist_pos == Some(index)))
+            .map(|(index, entry)| {
+                (
+                    entry.label().to_string(),
+                    self.status.playlist_pos == Some(index),
+                )
+            })
             .collect()
     }
 
