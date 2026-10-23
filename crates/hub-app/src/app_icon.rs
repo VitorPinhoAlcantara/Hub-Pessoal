@@ -1,4 +1,7 @@
-use hub_ui_kit::tokens::{ACCENT, BG_BASE};
+use hub_ui_kit::tokens::{Palette, hex};
+
+const ACCENT: hub_ui_kit::iced::Color = hex(0x7C9CF5);
+const BG_BASE: hub_ui_kit::iced::Color = Palette::DARK.background;
 
 pub fn rgba(size: u32) -> Vec<u8> {
     let to_rgba = |c: hub_ui_kit::iced::Color| {

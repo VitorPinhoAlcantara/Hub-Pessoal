@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
     ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
-    TrayEvent, TrayHandler, TrayImage,
+    TrayEvent, TrayHandler, TrayImage, TrayMenuState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub enum PlatformCall {
     RevealPath(PathBuf),
     Notify(Notification),
     SpawnTray,
+    UpdateTray(TrayMenuState),
 }
 
 pub struct FakePlatform {
@@ -159,6 +160,10 @@ impl Platform for FakePlatform {
         self.record(PlatformCall::SpawnTray);
         *self.tray.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
         Ok(())
+    }
+
+    fn update_tray(&self, state: TrayMenuState) {
+        self.record(PlatformCall::UpdateTray(state));
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {

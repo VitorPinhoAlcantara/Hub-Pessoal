@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, TimeDelta};
 
 use crate::clock::Clock;
 use crate::confirm::ConfirmationBroker;
-use crate::events::EventBus;
+use crate::events::{EventBus, HubEvent};
+use crate::notifications::Notifier;
 use crate::paths::HubPaths;
-use crate::platform::Platform;
+use crate::platform::{ActionHandler, Notification, Platform};
 use crate::scripts::{Script, ScriptStore};
 use crate::shortcuts::{Loaded, ShortcutStore};
 use crate::whatsapp::WhatsAppLink;
@@ -25,6 +26,7 @@ pub struct HubContext {
     pub scheduler_mark: Arc<Mutex<NaiveDateTime>>,
     pub confirmations: ConfirmationBroker,
     pub whatsapp: WhatsAppLink,
+    pub notifier: Notifier,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -52,6 +54,7 @@ impl HubContext {
             scheduler_mark: Arc::new(Mutex::new(now)),
             confirmations: ConfirmationBroker::default(),
             whatsapp: WhatsAppLink::default(),
+            notifier: Notifier::default(),
         }
     }
 
@@ -77,6 +80,31 @@ impl HubContext {
 
     pub fn shortcut_store(&self) -> MutexGuard<'_, ShortcutStore> {
         lock(&self.shortcut_store)
+    }
+
+    pub fn notify(&self, notification: Notification, on_action: Option<ActionHandler>) {
+        if self.notifier.muted_until(self.clock.now()).is_some() {
+            tracing::info!(titulo = %notification.title, "notificação silenciada");
+            return;
+        }
+        if let Err(error) = self.platform.notify(notification, on_action) {
+            tracing::warn!(%error, "falha ao mostrar a notificação");
+        }
+    }
+
+    pub fn mute_notifications(&self, hours: u32) {
+        let until = self.clock.now() + TimeDelta::hours(i64::from(hours));
+        self.notifier.mute_until(until);
+        self.events.publish(HubEvent::NotificationsChanged);
+    }
+
+    pub fn unmute_notifications(&self) {
+        self.notifier.clear();
+        self.events.publish(HubEvent::NotificationsChanged);
+    }
+
+    pub fn notifications_muted_until(&self) -> Option<NaiveDateTime> {
+        self.notifier.muted_until(self.clock.now())
     }
 
     pub fn take_scheduler_mark(&self, now: NaiveDateTime) -> NaiveDateTime {

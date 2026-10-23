@@ -40,6 +40,16 @@ pub fn is_playlist(url: &str) -> bool {
     url.contains("list=")
 }
 
+pub fn is_placeholder_title(title: &str) -> bool {
+    let title = title.trim();
+    title.is_empty()
+        || title.starts_with("http")
+        || title.starts_with("watch?")
+        || title.starts_with("playlist?")
+        || title.contains("youtube.com/")
+        || title.contains("youtu.be/")
+}
+
 pub fn is_supported_link(url: &str) -> bool {
     let url = url.trim();
     url.starts_with("https://") || url.starts_with("http://")
@@ -56,8 +66,21 @@ pub fn touch_favorite(conn: &Connection, url: &str, now: NaiveDateTime) -> rusql
 
 pub fn name_favorite(conn: &Connection, url: &str, title: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE player_favoritos SET titulo = ?2 WHERE url = ?1 AND titulo = ''",
+        "UPDATE player_favoritos SET titulo = ?2
+         WHERE url = ?1 AND (titulo = '' OR titulo LIKE 'watch?%' OR titulo LIKE 'playlist?%')",
         params![url.trim(), title.trim()],
+    )?;
+    Ok(())
+}
+
+pub fn rename_favorite(conn: &Connection, url: &str, title: &str) -> rusqlite::Result<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE player_favoritos SET titulo = ?2 WHERE url = ?1",
+        params![url.trim(), title],
     )?;
     Ok(())
 }
@@ -109,6 +132,10 @@ mod tests {
         assert_eq!(list[0].label(), "Música A");
         assert!(list[1].is_playlist());
         assert_eq!(list[1].label(), "https://youtube.com/playlist?list=b");
+        let playlist = "https://youtube.com/playlist?list=b";
+        rename_favorite(c, playlist, "Minha playlist").unwrap();
+        rename_favorite(c, playlist, "  ").unwrap();
+        assert_eq!(favorites(c).unwrap()[1].label(), "Minha playlist");
         remove_favorite(c, "https://youtu.be/a").unwrap();
         assert_eq!(favorites(c).unwrap().len(), 1);
     }

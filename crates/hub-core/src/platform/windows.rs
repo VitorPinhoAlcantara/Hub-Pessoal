@@ -1,20 +1,23 @@
 use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetDesktopWindow, GetForegroundWindow, GetMessageW, GetShellWindow,
-    GetWindowRect, MSG, SW_SHOWNORMAL, TranslateMessage,
+    GetWindowRect, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SW_SHOWNORMAL,
+    TranslateMessage, WM_APP,
 };
 
 use super::{
     ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
-    TrayHandler, TrayImage, bgra_to_rgba, collect_files, dedup_apps, find_in_path,
+    TrayHandler, TrayImage, TrayMenuState, bgra_to_rgba, collect_files, dedup_apps, find_in_path,
 };
 
 const ICON_PIXELS: i32 = 48;
@@ -97,6 +100,188 @@ impl MediaSession for WindowsMedia {
     }
 }
 
+pub(super) fn begin_window_drag(raw_window: u64, drag: super::WindowDrag) {
+    use super::WindowDrag;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTLEFT, HTRIGHT, HTTOP,
+        HTTOPLEFT, HTTOPRIGHT, PostMessageW, WM_NCLBUTTONDOWN,
+    };
+    let hit = match drag {
+        WindowDrag::Move => HTCAPTION,
+        WindowDrag::North => HTTOP,
+        WindowDrag::South => HTBOTTOM,
+        WindowDrag::East => HTRIGHT,
+        WindowDrag::West => HTLEFT,
+        WindowDrag::NorthEast => HTTOPRIGHT,
+        WindowDrag::NorthWest => HTTOPLEFT,
+        WindowDrag::SouthEast => HTBOTTOMRIGHT,
+        WindowDrag::SouthWest => HTBOTTOMLEFT,
+    };
+    unsafe {
+        let mut point = std::mem::zeroed();
+        GetCursorPos(&mut point);
+        let packed = ((point.y as u16 as u32) << 16) | (point.x as u16 as u32);
+        ReleaseCapture();
+        PostMessageW(
+            raw_window as _,
+            WM_NCLBUTTONDOWN,
+            hit as usize,
+            packed as isize,
+        );
+    }
+}
+
+pub(super) fn transparency_effects_enabled() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let key = wide(OsStr::new(
+        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+    ));
+    let name = wide(OsStr::new("EnableTransparency"));
+    let mut value: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    status != 0 || value != 0
+}
+
+pub(super) fn apply_taskbar_icon(raw_window: u64) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, ICON_BIG, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CYICON,
+        SendMessageW, WM_SETICON,
+    };
+    unsafe {
+        let module = GetModuleHandleW(std::ptr::null());
+        let icon = LoadImageW(
+            module,
+            1 as _,
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+            LR_DEFAULTCOLOR,
+        );
+        if !icon.is_null() {
+            SendMessageW(
+                raw_window as _,
+                WM_SETICON,
+                ICON_BIG as usize,
+                icon as isize,
+            );
+        }
+    }
+}
+
+struct WindowHandle(isize);
+
+impl raw_window_handle::HasWindowHandle for WindowHandle {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let hwnd = std::num::NonZeroIsize::new(self.0)
+            .ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let raw = raw_window_handle::RawWindowHandle::Win32(
+            raw_window_handle::Win32WindowHandle::new(hwnd),
+        );
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
+    }
+}
+
+pub(super) fn apply_acrylic(raw_window: u64, tint: (u8, u8, u8, u8)) -> Result<(), PlatformError> {
+    window_vibrancy::apply_acrylic(WindowHandle(raw_window as isize), Some(tint)).map_err(
+        |error| PlatformError::Launch {
+            target: "efeito acrílico".to_string(),
+            reason: error.to_string(),
+        },
+    )
+}
+
+pub(super) fn apply_blur(raw_window: u64, tint: (u8, u8, u8, u8)) -> Result<(), PlatformError> {
+    window_vibrancy::apply_blur(WindowHandle(raw_window as isize), Some(tint)).map_err(|error| {
+        PlatformError::Launch {
+            target: "desfoque da janela".to_string(),
+            reason: error.to_string(),
+        }
+    })
+}
+
+pub(super) fn clear_blur(raw_window: u64) {
+    let _ = window_vibrancy::clear_blur(WindowHandle(raw_window as isize));
+}
+
+pub(super) fn clear_acrylic(raw_window: u64) {
+    let _ = window_vibrancy::clear_acrylic(WindowHandle(raw_window as isize));
+}
+
+pub(super) fn desktop_wallpaper() -> Option<PathBuf> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETDESKWALLPAPER, SystemParametersInfoW,
+    };
+    let mut buffer = [0u16; 260];
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETDESKWALLPAPER,
+            buffer.len() as u32,
+            buffer.as_mut_ptr() as *mut _,
+            0,
+        )
+    };
+    if ok != 0 {
+        let length = buffer
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(buffer.len());
+        if length > 0 {
+            let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    let fallback = PathBuf::from(std::env::var_os("APPDATA")?)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Themes")
+        .join("TranscodedWallpaper");
+    fallback.is_file().then_some(fallback)
+}
+
+pub(super) fn launch_installer(installer: &Path, relaunch: &Path) -> Result<(), PlatformError> {
+    fn quote(path: &Path) -> String {
+        let text = path
+            .to_string_lossy()
+            .replace(['\'', '\u{2018}', '\u{2019}'], "''");
+        format!("'{text}'")
+    }
+    let script = format!(
+        "Start-Sleep -Seconds 2; Start-Process -FilePath {} -ArgumentList '/S' -Wait; Start-Process -FilePath {}",
+        quote(installer),
+        quote(relaunch)
+    );
+    let mut command = std::process::Command::new("powershell");
+    command
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    super::hide_console_std(&mut command);
+    command.spawn().map_err(|error| PlatformError::Launch {
+        target: installer.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    Ok(())
+}
+
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -124,12 +309,30 @@ fn shell_open(target: &OsStr) -> Result<(), PlatformError> {
     }
 }
 
-fn run_tray_loop() {
+static TRAY_THREAD: AtomicU32 = AtomicU32::new(0);
+
+fn run_tray_loop(apply: &mut dyn FnMut()) {
     unsafe {
         let mut message: MSG = std::mem::zeroed();
+        PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+        TRAY_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+        apply();
         while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            if message.message == WM_APP {
+                apply();
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
+        }
+    }
+}
+
+fn wake_tray() {
+    let thread = TRAY_THREAD.load(Ordering::SeqCst);
+    if thread != 0 {
+        unsafe {
+            PostThreadMessageW(thread, WM_APP, 0, 0);
         }
     }
 }
@@ -400,6 +603,11 @@ impl Platform for WindowsPlatform {
 
     fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError> {
         super::spawn_tray_thread(image, handler, run_tray_loop)
+    }
+
+    fn update_tray(&self, state: TrayMenuState) {
+        super::tray::queue(state);
+        wake_tray();
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {

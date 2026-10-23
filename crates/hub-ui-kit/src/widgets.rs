@@ -28,27 +28,27 @@ pub fn panel<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Container<'a, M> 
 pub fn title<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
     text(value)
         .size(FONT_SIZE_TITLE)
-        .font(font::UI_MEDIUM)
-        .color(TEXT_PRIMARY)
+        .font(font::ui_medium())
+        .color(text_primary())
 }
 
 pub fn heading<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
     text(value)
         .size(FONT_SIZE_HEADING)
-        .font(font::UI_MEDIUM)
-        .color(TEXT_PRIMARY)
+        .font(font::ui_medium())
+        .color(text_primary())
 }
 
 pub fn body<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(value).size(FONT_SIZE).color(TEXT_PRIMARY)
+    text(value).size(FONT_SIZE).color(text_primary())
 }
 
 pub fn muted<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(value).size(FONT_SIZE).color(TEXT_SECONDARY)
+    text(value).size(FONT_SIZE).color(text_secondary())
 }
 
 pub fn small<'a>(value: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(value).size(FONT_SIZE_SMALL).color(TEXT_SECONDARY)
+    text(value).size(FONT_SIZE_SMALL).color(text_secondary())
 }
 
 pub fn icon_button<'a, M: Clone + 'a>(
@@ -75,7 +75,7 @@ pub fn with_tooltip<'a, M: 'a>(
 ) -> Element<'a, M> {
     tooltip(
         content,
-        container(small(label).color(TEXT_PRIMARY))
+        container(small(label).color(text_primary()))
             .padding([units(1), units(2)])
             .style(style::elevated),
         position,
@@ -90,7 +90,7 @@ pub fn sidebar_button<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
-    let color = if active { ACCENT } else { TEXT_SECONDARY };
+    let color = if active { accent() } else { text_secondary() };
     let button = button(
         container(icon(glyph, ICON_SIZE + 2.0, color))
             .center_x(Length::Fill)
@@ -155,7 +155,11 @@ pub fn tab_button<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Button<'a, M> {
-    let color = if active { TEXT_PRIMARY } else { TEXT_SECONDARY };
+    let color = if active {
+        text_primary()
+    } else {
+        text_secondary()
+    };
     button(
         row![
             icon(glyph, ICON_SIZE - 4.0, color),
@@ -167,6 +171,17 @@ pub fn tab_button<'a, M: Clone + 'a>(
     .padding([units(1) + 2.0, units(3)])
     .style(style::toggle(active))
     .on_press(on_press)
+}
+
+pub fn divider<'a, M: 'a>() -> Element<'a, M> {
+    container(iced::widget::space())
+        .width(Length::Fill)
+        .height(1)
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(border_subtle())),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 pub fn scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
@@ -248,7 +263,7 @@ pub fn icon_label_button<'a, M: Clone + 'a>(
 ) -> Button<'a, M> {
     button(
         row![
-            icon(glyph, ICON_SIZE - 4.0, TEXT_SECONDARY),
+            icon(glyph, ICON_SIZE - 4.0, text_secondary()),
             text(label).size(FONT_SIZE)
         ]
         .spacing(units(2))
@@ -266,7 +281,7 @@ pub fn primary_icon_button<'a, M: Clone + 'a>(
 ) -> Button<'a, M> {
     button(
         row![
-            icon(glyph, ICON_SIZE - 4.0, BG_BASE),
+            icon(glyph, ICON_SIZE - 4.0, on_accent()),
             text(label).size(FONT_SIZE)
         ]
         .spacing(units(2))

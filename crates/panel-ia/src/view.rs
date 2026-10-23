@@ -47,10 +47,10 @@ fn previews<'a>(attachments: &'a [Attachment], removable: bool) -> Element<'a, M
                     .into(),
                 None => container(
                     column![
-                        icon(Icon::File, ICON_SIZE, TEXT_SECONDARY),
+                        icon(Icon::File, ICON_SIZE, text_secondary()),
                         text(attachment.name.as_str())
                             .size(FONT_SIZE_SMALL)
-                            .color(TEXT_SECONDARY)
+                            .color(text_secondary())
                             .wrapping(text::Wrapping::None)
                     ]
                     .spacing(units(1))
@@ -67,10 +67,14 @@ fn previews<'a>(attachments: &'a [Attachment], removable: bool) -> Element<'a, M
             let cell: Element<'a, Message> = if removable {
                 column![
                     thumb,
-                    button(text("remover").size(FONT_SIZE_SMALL).color(TEXT_SECONDARY))
-                        .padding(0)
-                        .style(style::ghost)
-                        .on_press(Message::RemoveAttachment(index)),
+                    button(
+                        text("remover")
+                            .size(FONT_SIZE_SMALL)
+                            .color(text_secondary())
+                    )
+                    .padding(0)
+                    .style(style::ghost)
+                    .on_press(Message::RemoveAttachment(index)),
                 ]
                 .spacing(units(1))
                 .align_x(Alignment::Center)
@@ -91,9 +95,9 @@ fn tool_card<'a>(
     is_error: bool,
 ) -> Element<'a, Message> {
     let (status, color) = match (output, is_error) {
-        (None, _) => ("executando", ACCENT),
-        (Some(_), false) => ("ok", SUCCESS),
-        (Some(_), true) => ("erro", DANGER),
+        (None, _) => ("executando", accent()),
+        (Some(_), false) => ("ok", success()),
+        (Some(_), true) => ("erro", danger()),
     };
     let summary: String = output
         .unwrap_or(input)
@@ -108,7 +112,7 @@ fn tool_card<'a>(
                 text(short_tool_name(name))
                     .size(FONT_SIZE_SMALL)
                     .font(Font::MONOSPACE)
-                    .color(TEXT_PRIMARY),
+                    .color(text_primary()),
                 space().width(Length::Fill),
                 badge(status, color),
             ]
@@ -127,8 +131,8 @@ fn tool_card<'a>(
 fn small_action<'a>(glyph: Icon, label: &'a str, message: Message) -> Element<'a, Message> {
     button(
         row![
-            icon(glyph, ICON_SIZE - 8.0, TEXT_SECONDARY),
-            text(label).size(FONT_SIZE_SMALL).color(TEXT_SECONDARY),
+            icon(glyph, ICON_SIZE - 8.0, text_secondary()),
+            text(label).size(FONT_SIZE_SMALL).color(text_secondary()),
         ]
         .spacing(units(1))
         .align_y(Alignment::Center),
@@ -193,14 +197,14 @@ fn item_view<'a>(chat: &'a Chat, index: usize, item: &'a Item) -> Element<'a, Me
             .into(),
         Item::Error(error) => container(
             row![
-                icon(Icon::Warning, ICON_SIZE - 4.0, DANGER),
-                body(error.as_str()).color(DANGER)
+                icon(Icon::Warning, ICON_SIZE - 4.0, danger()),
+                body(error.as_str()).color(danger())
             ]
             .spacing(units(2)),
         )
         .padding([units(2), units(3)])
         .width(Length::Fill)
-        .style(style::outlined(DANGER, false))
+        .style(style::outlined(danger(), false))
         .into(),
     };
     mouse_area(content)
@@ -245,7 +249,7 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         });
     let header = column![
         row![
-            icon(Icon::Ai, ICON_SIZE, ACCENT),
+            icon(Icon::Ai, ICON_SIZE, accent()),
             heading("Chat de IA"),
             space().width(Length::Fill),
             icon_label_button(Icon::Plus, "Nova", Some(Message::NewConversation)),
@@ -292,13 +296,13 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
     };
 
     let action: Element<'_, Message> = if chat.is_running() {
-        button(icon(Icon::Stop, ICON_SIZE - 2.0, BG_BASE))
+        button(icon(Icon::Stop, ICON_SIZE - 2.0, contrast_text(danger())))
             .padding(units(2))
             .style(style::danger_solid)
             .on_press(Message::Cancel)
             .into()
     } else {
-        button(icon(Icon::Send, ICON_SIZE - 2.0, BG_BASE))
+        button(icon(Icon::Send, ICON_SIZE - 2.0, on_accent()))
             .padding(units(2))
             .style(style::primary)
             .on_press_maybe(chat.can_send().then_some(Message::Send))
@@ -313,7 +317,7 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         .min_height(units(9))
         .max_height(units(40))
         .style(style::editor);
-    let attach = icon_button(Icon::Attach, TEXT_SECONDARY, Some(Message::AttachFiles));
+    let attach = icon_button(Icon::Attach, text_secondary(), Some(Message::AttachFiles));
     let mut composer = Column::new().spacing(units(2));
     if !chat.attachments().is_empty() {
         composer = composer.push(previews(chat.attachments(), true));

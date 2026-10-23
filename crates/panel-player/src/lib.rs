@@ -1,16 +1,19 @@
 pub mod mpv;
+pub mod playlist;
 mod view;
 
-use std::time::Duration;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use hub_core::HubContext;
-use hub_core::platform::{MediaCommand, MediaInfo, ipc};
+use hub_core::platform::{self, MediaCommand, MediaInfo, ipc};
 use hub_core::player::{self, Favorite};
 use hub_ui_kit::Section;
 use hub_ui_kit::iced::{Element, Subscription, Task, time};
 
 pub use mpv::{Command, Entry, MpvEvent, MpvProcess, Property, Tools};
+pub use playlist::{PlaylistEntry, PlaylistInfo};
 
 pub const SYSTEM_REFRESH: Duration = Duration::from_millis(1500);
 pub const SYSTEM_SETTLE: Duration = Duration::from_millis(350);
@@ -35,6 +38,8 @@ pub enum Message {
     UrlChanged(String),
     PlayInput,
     Play(String),
+    PlaylistResolved(String, Option<PlaylistInfo>),
+    DirectResolved(String, Option<String>),
     Mpv(MpvEvent),
     TogglePause,
     Next,
@@ -56,6 +61,12 @@ pub enum Message {
     ErrorDismissed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Listing {
+    key: String,
+    video: Option<String>,
+}
+
 pub struct Player {
     ctx: HubContext,
     expanded: bool,
@@ -67,9 +78,18 @@ pub struct Player {
     sender: Option<mpsc::UnboundedSender<Command>>,
     queued: Vec<Command>,
     current_url: Option<String>,
+    listing: Option<Listing>,
+    waiting_list: bool,
+    queue: Vec<PlaylistEntry>,
+    index: usize,
+    preloaded: Option<String>,
+    resolving: HashSet<String>,
+    cache: playlist::DirectCache,
+    titles_ok: bool,
     status: Status,
     seek_preview: Option<f64>,
     favorites: Vec<Favorite>,
+    favorite_order: Vec<String>,
     system: Option<MediaInfo>,
     updating_ytdlp: bool,
     notice: Option<String>,
@@ -90,12 +110,21 @@ impl Player {
             sender: None,
             queued: Vec::new(),
             current_url: None,
+            listing: None,
+            waiting_list: false,
+            queue: Vec::new(),
+            index: 0,
+            preloaded: None,
+            resolving: HashSet::new(),
+            cache: playlist::DirectCache::default(),
+            titles_ok: true,
             status: Status {
                 volume: DEFAULT_VOLUME,
                 ..Status::default()
             },
             seek_preview: None,
             favorites: Vec::new(),
+            favorite_order: Vec::new(),
             system: None,
             updating_ytdlp: false,
             notice: None,
@@ -124,6 +153,10 @@ impl Player {
 
     pub fn is_active(&self) -> bool {
         self.process.is_some()
+    }
+
+    pub fn loading_playlist(&self) -> bool {
+        self.waiting_list
     }
 
     pub fn is_connected(&self) -> bool {
@@ -203,26 +236,273 @@ impl Player {
         Ok(())
     }
 
-    fn play(&mut self, url: String) {
+    fn cookie_source(&self) -> Option<String> {
+        platform::ytdlp_cookie_source(self.ctx.config().player.browser_login)
+    }
+
+    fn start_item(&mut self, index: usize) -> Task<Message> {
+        let Some(entry) = self.queue.get(index).cloned() else {
+            return Task::none();
+        };
+        self.index = index;
+        self.preloaded = None;
+        let url = self
+            .cache
+            .get(&entry.id, Instant::now())
+            .map(str::to_string)
+            .unwrap_or_else(|| playlist::watch_url(&entry.id));
+        let title = entry.title.clone().filter(|_| self.titles_ok);
+        self.status.title = entry.title.clone();
+        self.send(Command::Load { url, title });
+        self.prefetch_next()
+    }
+
+    fn prefetch_next(&mut self) -> Task<Message> {
+        if self.preloaded.is_some() {
+            return Task::none();
+        }
+        let Some(next) = self.queue.get(self.index + 1).cloned() else {
+            return Task::none();
+        };
+        if let Some(direct) = self.cache.get(&next.id, Instant::now()).map(str::to_string) {
+            self.append_next(&next, direct);
+            return Task::none();
+        }
+        let Some(ytdlp) = self.tools.as_ref().and_then(|t| t.ytdlp_path.clone()) else {
+            self.append_next(&next, playlist::watch_url(&next.id));
+            return Task::none();
+        };
+        if !self.resolving.insert(next.id.clone()) {
+            return Task::none();
+        }
+        let id = next.id.clone();
+        Task::perform(
+            blocking(move || playlist::fetch_direct(&ytdlp, &id)),
+            move |direct| Message::DirectResolved(next.id.clone(), direct),
+        )
+    }
+
+    fn append_next(&mut self, entry: &PlaylistEntry, url: String) {
+        let title = entry.title.clone().filter(|_| self.titles_ok);
+        self.send(Command::Append { url, title });
+        self.preloaded = Some(entry.id.clone());
+    }
+
+    fn direct_resolved(&mut self, id: String, direct: Option<String>) {
+        self.resolving.remove(&id);
+        let url = match direct {
+            Some(direct) => {
+                self.cache.insert(&id, direct.clone(), Instant::now());
+                direct
+            }
+            None => playlist::watch_url(&id),
+        };
+        let still_next = self
+            .queue
+            .get(self.index + 1)
+            .is_some_and(|entry| entry.id == id);
+        if still_next
+            && self.preloaded.is_none()
+            && let Some(entry) = self.queue.get(self.index + 1).cloned()
+        {
+            self.append_next(&entry, url);
+        }
+    }
+
+    fn advanced(&mut self) -> Task<Message> {
+        if self.preloaded.take().is_none() {
+            return Task::none();
+        }
+        self.index += 1;
+        self.send(Command::PlaylistRemove(0));
+        self.prefetch_next()
+    }
+
+    pub fn queue_items(&self) -> Vec<(String, bool)> {
+        if !self.queue.is_empty() {
+            return self
+                .queue
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    let label = entry.title.clone().unwrap_or_else(|| entry.id.clone());
+                    (label, index == self.index)
+                })
+                .collect();
+        }
+        self.status
+            .playlist
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.label().to_string(), self.status.playlist_pos == Some(index)))
+            .collect()
+    }
+
+    fn play(&mut self, url: String) -> Task<Message> {
+        let task = self.play_with(url, true);
+        self.favorite_order = self.favorites.iter().map(|f| f.url.clone()).collect();
+        task
+    }
+
+    fn favorite_neighbor(&self, step: isize) -> Option<String> {
+        if self.favorite_order.len() < 2 {
+            return None;
+        }
+        let current = self.current_url.as_ref()?;
+        let index = self.favorite_order.iter().position(|url| url == current)? as isize;
+        let next = index + step;
+        (next >= 0 && (next as usize) < self.favorite_order.len())
+            .then(|| self.favorite_order[next as usize].clone())
+    }
+
+    fn skip(&mut self, step: isize) -> Task<Message> {
+        if !self.queue.is_empty() {
+            let target = self.index as isize + step;
+            if target >= 0 && (target as usize) < self.queue.len() {
+                return self.start_item(target as usize);
+            }
+        }
+        match self.favorite_neighbor(step) {
+            Some(url) => self.play_with(url, false),
+            None => Task::none(),
+        }
+    }
+
+    fn play_with(&mut self, url: String, touch: bool) -> Task<Message> {
         let url = url.trim().to_string();
         if !player::is_supported_link(&url) {
             self.error = Some("Cole um link http ou https do YouTube.".to_string());
-            return;
+            return Task::none();
         }
         if let Err(error) = self.start() {
             self.error = Some(error);
-            return;
+            return Task::none();
         }
         self.error = None;
         self.current_url = Some(url.clone());
         self.status.title = None;
-        self.send(Command::LoadFile(url.clone()));
-        let now = self.ctx.clock.now();
-        if let Err(error) = player::touch_favorite(self.ctx.db().conn(), &url, now) {
-            tracing::warn!(%error, "falha ao salvar favorita");
+        self.listing = None;
+        self.waiting_list = false;
+        self.queue.clear();
+        self.index = 0;
+        self.preloaded = None;
+        self.resolving.clear();
+        let plan = playlist::plan(&url);
+        let ytdlp = self.tools.as_ref().and_then(|t| t.ytdlp_path.clone());
+        let mut task = Task::none();
+        match (plan.lookup.clone(), ytdlp) {
+            (Some(list), Some(ytdlp)) => {
+                if let Some(video) = plan.start_video.clone() {
+                    self.queue.push(PlaylistEntry {
+                        id: video,
+                        title: None,
+                    });
+                    task = self.start_item(0);
+                } else {
+                    self.waiting_list = true;
+                }
+                self.listing = Some(Listing {
+                    key: url.clone(),
+                    video: plan.start_video.clone(),
+                });
+                let key = url.clone();
+                task = Task::batch([
+                    task,
+                    Task::perform(
+                        {
+                            let cookies = self.cookie_source();
+                            blocking(move || {
+                                playlist::fetch_info(&ytdlp, &list, cookies.as_deref())
+                            })
+                        },
+                        move |info| Message::PlaylistResolved(key.clone(), info),
+                    ),
+                ]);
+            }
+            (Some(list), None) => {
+                let target = plan.first.clone().unwrap_or(list);
+                self.send(Command::Load {
+                    url: target,
+                    title: None,
+                });
+            }
+            (None, _) => {
+                if let Some(first) = plan.first.clone() {
+                    self.send(Command::Load {
+                        url: first,
+                        title: None,
+                    });
+                }
+            }
         }
-        self.reload_favorites();
+        if touch {
+            let now = self.ctx.clock.now();
+            if let Err(error) = player::touch_favorite(self.ctx.db().conn(), &url, now) {
+                tracing::warn!(%error, "falha ao salvar favorita");
+            }
+            self.reload_favorites();
+        }
         self.url.clear();
+        task
+    }
+
+    fn resolve_playlist(&mut self, key: String, info: Option<PlaylistInfo>) -> Task<Message> {
+        if let Some(info) = &info
+            && let Some(title) = &info.title
+        {
+            let _ = player::rename_favorite(self.ctx.db().conn(), &key, title);
+            self.reload_favorites();
+        }
+        let Some(listing) = self.listing.take_if(|listing| listing.key == key) else {
+            return Task::none();
+        };
+        self.waiting_list = false;
+        let entries = info.map(|info| info.entries).unwrap_or_default();
+        if entries.is_empty() {
+            if self.queue.is_empty() {
+                self.error = Some(
+                    "Não foi possível carregar a playlist. Se ela for privada, o YouTube só mostra as faixas para quem está logado.".to_string(),
+                );
+            } else {
+                self.notice = Some(
+                    "Não foi possível ler as outras faixas da playlist (ela pode ser privada). Tocando só este vídeo.".to_string(),
+                );
+            }
+            return Task::none();
+        }
+        let position = listing
+            .video
+            .as_deref()
+            .and_then(|video| entries.iter().position(|entry| entry.id == video));
+        match position {
+            Some(position) => {
+                self.queue = entries;
+                self.index = position;
+                if let Some(entry) = self.queue.get(position)
+                    && self.status.title.is_none()
+                {
+                    self.status.title = entry.title.clone();
+                }
+                self.prefetch_next()
+            }
+            None if self.queue.is_empty() => {
+                self.queue = entries;
+                self.start_item(0)
+            }
+            None => {
+                self.queue.extend(entries);
+                self.prefetch_next()
+            }
+        }
+    }
+
+    fn command_failed(&mut self, command: Command, error: &str) {
+        if let Some(plain) = command.without_title() {
+            self.titles_ok = false;
+            self.send(plain);
+        } else {
+            tracing::debug!(?command, %error, "comando do mpv falhou");
+        }
     }
 
     fn stop(&mut self) {
@@ -232,6 +512,12 @@ impl Player {
         self.process = None;
         self.ipc_path = None;
         self.queued.clear();
+        self.listing = None;
+        self.waiting_list = false;
+        self.queue.clear();
+        self.index = 0;
+        self.preloaded = None;
+        self.resolving.clear();
         self.current_url = None;
         let volume = self.status.volume;
         self.status = Status {
@@ -245,7 +531,8 @@ impl Player {
         match property {
             Property::Title(title) => {
                 if let (Some(url), Some(title)) = (&self.current_url, &title)
-                    && !title.starts_with("http")
+                    && !player::is_placeholder_title(title)
+                    && !player::is_playlist(url)
                 {
                     let _ = player::name_favorite(self.ctx.db().conn(), url, title);
                     self.reload_favorites();
@@ -289,12 +576,14 @@ impl Section for Player {
             Message::UrlChanged(url) => self.url = url,
             Message::PlayInput => {
                 let url = self.url.clone();
-                self.play(url);
+                return self.play(url);
             }
             Message::Play(url) => {
                 self.expanded = true;
-                self.play(url);
+                return self.play(url);
             }
+            Message::PlaylistResolved(url, info) => return self.resolve_playlist(url, info),
+            Message::DirectResolved(id, direct) => self.direct_resolved(id, direct),
             Message::Mpv(event) => match event {
                 MpvEvent::Connected(sender) => {
                     for command in self.queued.drain(..) {
@@ -302,7 +591,25 @@ impl Section for Player {
                     }
                     self.sender = Some(sender);
                 }
-                MpvEvent::Property(property) => self.apply(property),
+                MpvEvent::Property(property) => {
+                    let advanced = matches!(property, Property::PlaylistPos(Some(pos)) if pos >= 1)
+                        && self.preloaded.is_some();
+                    let finished = matches!(property, Property::Idle(true))
+                        && !self.status.idle
+                        && self.status.title.is_some()
+                        && self.index + 1 >= self.queue.len();
+                    self.apply(property);
+                    if advanced {
+                        return self.advanced();
+                    }
+                    if finished
+                        && !self.waiting_list
+                        && let Some(next) = self.favorite_neighbor(1)
+                    {
+                        return self.play_with(next, false);
+                    }
+                }
+                MpvEvent::Failed(command, error) => self.command_failed(command, &error),
                 MpvEvent::Disconnected(reason) => {
                     let was_active = self.process.is_some();
                     self.sender = None;
@@ -313,8 +620,8 @@ impl Section for Player {
                 }
             },
             Message::TogglePause => self.send(Command::TogglePause),
-            Message::Next => self.send(Command::Next),
-            Message::Previous => self.send(Command::Previous),
+            Message::Next => return self.skip(1),
+            Message::Previous => return self.skip(-1),
             Message::VolumeChanged(volume) => {
                 self.status.volume = volume;
                 if self.is_active() {
@@ -328,7 +635,12 @@ impl Section for Player {
                     self.send(Command::Seek(position));
                 }
             }
-            Message::PlayIndex(index) => self.send(Command::PlayIndex(index)),
+            Message::PlayIndex(index) => {
+                if !self.queue.is_empty() {
+                    return self.start_item(index);
+                }
+                self.send(Command::PlayIndex(index));
+            }
             Message::Stop => self.stop(),
             Message::ToggleExpanded => self.expanded = !self.expanded,
             Message::FavoriteRemoved(url) => {

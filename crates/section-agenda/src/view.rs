@@ -23,9 +23,9 @@ const EDITOR_WIDTH: f32 = 520.0;
 
 pub fn kind_color(kind: CardKind) -> Color {
     match kind {
-        CardKind::Appointment => KIND_APPOINTMENT,
-        CardKind::Routine => KIND_ROUTINE,
-        CardKind::Reminder => KIND_REMINDER,
+        CardKind::Appointment => kind_appointment(),
+        CardKind::Routine => kind_routine(),
+        CardKind::Reminder => kind_reminder(),
     }
 }
 
@@ -103,7 +103,7 @@ fn header(agenda: &Agenda) -> Element<'_, Message> {
 
     let create = button(
         row![
-            icon(Icon::Plus, ICON_SIZE - 4.0, BG_BASE),
+            icon(Icon::Plus, ICON_SIZE - 4.0, on_accent()),
             text("Nova agenda").size(FONT_SIZE)
         ]
         .spacing(units(2))
@@ -166,9 +166,9 @@ fn filters(agenda: &Agenda) -> Element<'_, Message> {
                             .height(10)
                             .style(style::outlined(color, dimmed)),
                         text(kind.label()).size(FONT_SIZE_SMALL).color(if dimmed {
-                            TEXT_SECONDARY
+                            text_secondary()
                         } else {
-                            TEXT_PRIMARY
+                            text_primary()
                         }),
                     ]
                     .spacing(units(2))
@@ -185,8 +185,8 @@ fn filters(agenda: &Agenda) -> Element<'_, Message> {
 fn error_banner(error: &str) -> Element<'_, Message> {
     container(
         row![
-            body(error).color(DANGER).width(Length::Fill),
-            icon_button(Icon::Close, TEXT_SECONDARY, Some(Message::ErrorDismissed)),
+            body(error).color(danger()).width(Length::Fill),
+            icon_button(Icon::Close, text_secondary(), Some(Message::ErrorDismissed)),
         ]
         .align_y(Alignment::Center)
         .spacing(units(2)),
@@ -219,7 +219,7 @@ fn missed_banner(missed: &[Reminder], today: NaiveDate) -> Element<'_, Message> 
     container(
         column![
             row![
-                icon(Icon::Bell, ICON_SIZE - 2.0, ACCENT),
+                icon(Icon::Bell, ICON_SIZE - 2.0, accent()),
                 heading(label).width(Length::Fill),
                 ghost_button("Dispensar", Some(Message::MissedDismissed)),
             ]
@@ -257,7 +257,7 @@ fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element
         meta = meta.push(small(format::short_date(date)));
     }
     if let Some(time) = card.time {
-        meta = meta.push(small(time.format("%H:%M").to_string()).color(TEXT_PRIMARY));
+        meta = meta.push(small(time.format("%H:%M").to_string()).color(text_primary()));
     }
     meta = meta.push(
         small(if card.projected {
@@ -268,12 +268,16 @@ fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element
         .color(color),
     );
     if card.is_overdue(today) {
-        meta = meta.push(small("atrasada").color(DANGER));
+        meta = meta.push(small("atrasada").color(danger()));
     }
     if card.high_priority {
-        meta = meta.push(icon(Icon::Flag, ICON_SIZE - 7.0, DANGER));
+        meta = meta.push(icon(Icon::Flag, ICON_SIZE - 7.0, danger()));
     }
-    let title_color = if faded { TEXT_SECONDARY } else { TEXT_PRIMARY };
+    let title_color = if faded {
+        text_secondary()
+    } else {
+        text_primary()
+    };
     let content = container(
         row![
             leading,
@@ -334,11 +338,11 @@ fn day_column<'a>(agenda: &'a Agenda, day: &'a DayColumn, width: f32) -> Element
     let drop_target =
         agenda.drag().is_some_and(|d| d.active) && agenda.hovered_day() == Some(day.date);
     let name_color = if is_today {
-        ACCENT
+        accent()
     } else if is_past {
-        TEXT_SECONDARY
+        text_secondary()
     } else {
-        TEXT_PRIMARY
+        text_primary()
     };
     let mut date_line = row![small(day.date.format("%d/%m").to_string())]
         .spacing(units(2))
@@ -347,7 +351,7 @@ fn day_column<'a>(agenda: &'a Agenda, day: &'a DayColumn, width: f32) -> Element
         date_line = date_line.push(
             container(text("Hoje").size(FONT_SIZE_SMALL))
                 .padding([1.0, units(2)])
-                .style(style::pill(ACCENT)),
+                .style(style::pill(accent())),
         );
     }
     let head = row![
@@ -359,7 +363,7 @@ fn day_column<'a>(agenda: &'a Agenda, day: &'a DayColumn, width: f32) -> Element
         .width(Length::Fill),
         icon_button(
             Icon::Plus,
-            TEXT_SECONDARY,
+            text_secondary(),
             Some(Message::OpenCreate(Some(day.date)))
         ),
     ]
@@ -385,7 +389,7 @@ fn pending_column(agenda: &Agenda) -> Element<'_, Message> {
         heading("Pendências").width(Length::Fill),
         container(text(agenda.pending().len().to_string()).size(FONT_SIZE_SMALL))
             .padding([1.0, units(2)])
-            .style(style::pill(DANGER)),
+            .style(style::pill(danger())),
     ]
     .align_y(Alignment::Center);
     container(
@@ -481,14 +485,14 @@ fn calendar_cell<'a>(
     let number: Element<'_, Message> = if is_today {
         container(number)
             .padding([1.0, units(2)])
-            .style(style::pill(ACCENT))
+            .style(style::pill(accent()))
             .into()
     } else {
         number
             .color(if in_month {
-                TEXT_PRIMARY
+                text_primary()
             } else {
-                TEXT_SECONDARY
+                text_secondary()
             })
             .into()
     };
@@ -508,9 +512,9 @@ fn calendar_cell<'a>(
                 text(label)
                     .size(FONT_SIZE_SMALL)
                     .color(if card.done {
-                        TEXT_SECONDARY
+                        text_secondary()
                     } else {
-                        TEXT_PRIMARY
+                        text_primary()
                     })
                     .wrapping(text::Wrapping::None),
             ]
@@ -696,7 +700,7 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
         let mut chips = row![
             button(
                 row![
-                    icon(Icon::Agenda, ICON_SIZE - 4.0, TEXT_SECONDARY),
+                    icon(Icon::Agenda, ICON_SIZE - 4.0, text_secondary()),
                     text(date_label).size(FONT_SIZE)
                 ]
                 .spacing(units(2))
@@ -776,7 +780,7 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
     ));
 
     if let Some(error) = &editor.error {
-        form = form.push(body(error.as_str()).color(DANGER));
+        form = form.push(body(error.as_str()).color(danger()));
     }
 
     let mut footer = Row::new().spacing(units(2)).align_y(Alignment::Center);
@@ -789,8 +793,8 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
         footer = footer.push(
             button(
                 row![
-                    icon(Icon::Trash, ICON_SIZE - 4.0, DANGER),
-                    text("Excluir").size(FONT_SIZE).color(DANGER)
+                    icon(Icon::Trash, ICON_SIZE - 4.0, danger()),
+                    text("Excluir").size(FONT_SIZE).color(danger())
                 ]
                 .spacing(units(2))
                 .align_y(Alignment::Center),
@@ -827,15 +831,15 @@ fn routine_row(routine: &Routine) -> Element<'_, Message> {
                 .size(16),
             column![
                 body(routine.title.as_str()).color(if routine.active {
-                    TEXT_PRIMARY
+                    text_primary()
                 } else {
-                    TEXT_SECONDARY
+                    text_secondary()
                 }),
                 small(format::routine_meta(routine)),
             ]
             .spacing(2)
             .width(Length::Fill),
-            button(icon(Icon::Trash, ICON_SIZE - 4.0, TEXT_SECONDARY))
+            button(icon(Icon::Trash, ICON_SIZE - 4.0, text_secondary()))
                 .padding(units(1))
                 .style(style::danger)
                 .on_press(Message::AskDelete(
@@ -847,7 +851,7 @@ fn routine_row(routine: &Routine) -> Element<'_, Message> {
         .align_y(Alignment::Center),
     )
     .padding([units(2), units(3)])
-    .style(style::outlined(KIND_ROUTINE, !routine.active))
+    .style(style::outlined(kind_routine(), !routine.active))
     .into()
 }
 
@@ -879,9 +883,9 @@ fn completed_row(task: &Task, today: NaiveDate) -> Element<'_, Message> {
     let kind = Card::from_task(task).kind;
     container(
         row![
-            icon(Icon::Check, ICON_SIZE - 4.0, SUCCESS),
+            icon(Icon::Check, ICON_SIZE - 4.0, success()),
             column![
-                body(task.title.as_str()).color(TEXT_SECONDARY),
+                body(task.title.as_str()).color(text_secondary()),
                 row![
                     small(kind.label()).color(kind_color(kind)),
                     small(format::completed_meta(task, today)),
@@ -892,7 +896,7 @@ fn completed_row(task: &Task, today: NaiveDate) -> Element<'_, Message> {
             .width(Length::Fill),
             button(
                 row![
-                    icon(Icon::Undo, ICON_SIZE - 6.0, TEXT_SECONDARY),
+                    icon(Icon::Undo, ICON_SIZE - 6.0, text_secondary()),
                     small("Desfazer")
                 ]
                 .spacing(units(1))

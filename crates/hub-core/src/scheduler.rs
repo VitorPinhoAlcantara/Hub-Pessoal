@@ -3,6 +3,7 @@ use chrono::{NaiveDateTime, NaiveTime, TimeDelta};
 use crate::agenda::{self, Reminder};
 use crate::context::HubContext;
 use crate::events::HubEvent;
+use crate::notes;
 use crate::platform::Notification;
 use crate::scripts::{self, Script};
 
@@ -22,7 +23,11 @@ pub fn startup(ctx: &HubContext) -> agenda::Result<Vec<Reminder>> {
     let db = ctx.db();
     let created = agenda::generate_routine_tasks(db.conn(), now.date(), now)?;
     let missed = agenda::take_missed_reminders(db.conn(), now, MISSED_GRACE)?;
+    let cleared = notes::reset_due(db.conn(), now)?;
     drop(db);
+    if cleared > 0 {
+        ctx.events.publish(HubEvent::NotesChanged);
+    }
     if created > 0 || !missed.is_empty() {
         ctx.events.publish(HubEvent::AgendaChanged);
     }
@@ -39,7 +44,11 @@ pub fn tick(ctx: &HubContext) -> agenda::Result<Tick> {
     for reminder in &due {
         agenda::mark_reminder_fired(db.conn(), reminder.id, now)?;
     }
+    let cleared = notes::reset_due(db.conn(), now)?;
     drop(db);
+    if cleared > 0 {
+        ctx.events.publish(HubEvent::NotesChanged);
+    }
     for reminder in &due {
         notify(ctx, reminder);
     }
@@ -57,7 +66,8 @@ pub fn next_wake(ctx: &HubContext) -> agenda::Result<NaiveDateTime> {
     let midnight = (now.date() + TimeDelta::days(1)).and_time(NaiveTime::MIN);
     let reminder = agenda::next_reminder_time(ctx.db().conn())?;
     let script = scripts::next_scheduled(&ctx.scripts(), now);
-    let next = [reminder, script, Some(midnight)]
+    let note_reset = notes::next_reset(ctx.db().conn(), now)?;
+    let next = [reminder, script, note_reset, Some(midnight)]
         .into_iter()
         .flatten()
         .min()
@@ -78,7 +88,7 @@ fn notify(ctx: &HubContext, reminder: &Reminder) {
     };
     let handler_ctx = ctx.clone();
     let handler_reminder = reminder.clone();
-    let result = ctx.platform.notify(
+    ctx.notify(
         notification,
         Some(Box::new(move |action| {
             if let Err(error) = handle_action(&handler_ctx, &handler_reminder, action.as_deref()) {
@@ -86,9 +96,6 @@ fn notify(ctx: &HubContext, reminder: &Reminder) {
             }
         })),
     );
-    if let Err(error) = result {
-        tracing::warn!(%error, lembrete = reminder.id, "falha ao mostrar a notificação");
-    }
 }
 
 pub fn handle_action(

@@ -16,7 +16,11 @@ macro_rules! icons {
 }
 
 icons! {
+    Home => "home",
     Agenda => "agenda",
+    Notes => "notes",
+    Lock => "lock",
+    Unlock => "unlock",
     Scripts => "scripts",
     Shortcuts => "atalhos",
     WhatsApp => "whatsapp",

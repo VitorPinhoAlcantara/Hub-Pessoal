@@ -1,0 +1,14 @@
+[package]
+name = "section-notas"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hub-core.workspace = true
+hub-ui-kit.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

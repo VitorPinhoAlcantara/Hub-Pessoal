@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hub_core::HubContext;
+use hub_core::events::HubEvent;
 use hub_core::per_os::PerOs;
 use hub_core::platform::{self, FileIcon, InstalledApp, Os, Platform};
 use hub_core::shortcuts::{self, DEFAULT_GROUP, Loaded, MoveTarget, Shortcut, ShortcutKind};
@@ -445,10 +446,22 @@ impl Shortcuts {
     }
 
     fn open(&mut self, index: usize) {
-        if let Some(shortcut) = self.shortcuts().get(index)
-            && let Err(error) = shortcuts::open(self.ctx.platform.as_ref(), shortcut)
-        {
-            self.error = Some(format!("Não foi possível abrir {}: {error}", shortcut.name));
+        let Some(shortcut) = self.shortcuts().get(index) else {
+            return;
+        };
+        match shortcuts::open(self.ctx.platform.as_ref(), shortcut) {
+            Ok(()) => {
+                let key = shortcuts::usage_key(shortcut, self.os());
+                let recorded =
+                    shortcuts::record_use(self.ctx.db().conn(), &key, self.ctx.clock.now());
+                match recorded {
+                    Ok(()) => self.ctx.events.publish(HubEvent::ShortcutsChanged),
+                    Err(error) => tracing::warn!(%error, "falha ao registrar o uso do atalho"),
+                }
+            }
+            Err(error) => {
+                self.error = Some(format!("Não foi possível abrir {}: {error}", shortcut.name));
+            }
         }
     }
 

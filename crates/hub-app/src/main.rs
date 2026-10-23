@@ -2,6 +2,8 @@
 
 mod app;
 mod app_icon;
+mod appearance;
+mod maintenance;
 mod shell;
 mod streams;
 
@@ -35,7 +37,7 @@ fn parse_options() -> Options {
     options
 }
 
-fn configure_renderer(renderer: Renderer) {
+fn configure_renderer(renderer: Renderer, translucent: bool) {
     let set_default = |key: &str, value: &str| {
         if std::env::var_os(key).is_none() {
             unsafe { std::env::set_var(key, value) };
@@ -47,15 +49,37 @@ fn configure_renderer(renderer: Renderer) {
     if let Some(backend) = hub_core::platform::preferred_gpu_backend() {
         set_default("WGPU_BACKEND", backend);
     }
+    if translucent && renderer == Renderer::Gpu {
+        set_default("WGPU_DX12_PRESENTATION_SYSTEM", "Visual");
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let options = parse_options();
     let paths = HubPaths::resolve().context("resolvendo as pastas do hub")?;
     paths.ensure_dirs().context("criando as pastas do hub")?;
-    let config = Config::load_or_create(&paths.config_file()).context("lendo config.toml")?;
-    configure_renderer(config.general.renderer);
+    if hub_core::backup::has_pending_restore(&paths) {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    let restore_result = hub_core::backup::apply_pending_restore(
+        &paths,
+        hub_core::chrono::Local::now().naive_local(),
+    );
+    let mut config = Config::load_or_create(&paths.config_file()).context("lendo config.toml")?;
+    let translucent_failed = appearance::guard_translucent_start(&paths, &mut config);
+    configure_renderer(
+        config.general.renderer,
+        config.appearance.wallpaper.mode == hub_core::config::WallpaperMode::Translucent,
+    );
     let _log_guard = hub_core::logging::init(&paths.logs_dir).context("iniciando os logs")?;
+    if translucent_failed {
+        tracing::warn!("a janela translúcida falhou na última abertura e foi desligada");
+    }
+    match &restore_result {
+        Ok(Some(zip)) => tracing::info!(backup = %zip.display(), "backup restaurado"),
+        Ok(None) => {}
+        Err(error) => tracing::error!(%error, "falha ao restaurar o backup"),
+    }
     let db = Database::open(&paths.database_file()).context("abrindo o banco de dados")?;
     let ctx = HubContext::new(
         paths,

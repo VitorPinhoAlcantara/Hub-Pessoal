@@ -27,18 +27,18 @@ fn moment(at: NaiveDateTime) -> String {
 
 fn status_color(status: &Status) -> Color {
     match status {
-        Status::Completed(0) => SUCCESS,
-        Status::Cancelled => TEXT_SECONDARY,
-        _ => DANGER,
+        Status::Completed(0) => success(),
+        Status::Cancelled => text_secondary(),
+        _ => danger(),
     }
 }
 
 fn execution_label(execution: &Execution) -> (String, Color) {
     match (execution.finished_at, execution.exit_code) {
-        (None, _) => ("Em andamento".to_string(), ACCENT),
-        (Some(_), Some(0)) => ("Sucesso".to_string(), SUCCESS),
-        (Some(_), Some(code)) => (format!("Código {code}"), DANGER),
-        (Some(_), None) => ("Interrompido".to_string(), WARNING),
+        (None, _) => ("Em andamento".to_string(), accent()),
+        (Some(_), Some(0)) => ("Sucesso".to_string(), success()),
+        (Some(_), Some(code)) => (format!("Código {code}"), danger()),
+        (Some(_), None) => ("Interrompido".to_string(), warning()),
     }
 }
 
@@ -57,8 +57,8 @@ pub fn view(section: &Scripts) -> Element<'_, Message> {
         content = content.push(
             container(
                 row![
-                    body(error).color(DANGER).width(Length::Fill),
-                    icon_button(Icon::Close, TEXT_SECONDARY, Some(Message::ErrorDismissed)),
+                    body(error).color(danger()).width(Length::Fill),
+                    icon_button(Icon::Close, text_secondary(), Some(Message::ErrorDismissed)),
                 ]
                 .align_y(Alignment::Center),
             )
@@ -70,7 +70,7 @@ pub fn view(section: &Scripts) -> Element<'_, Message> {
     let list: Element<'_, Message> = if section.scripts().is_empty() {
         container(
             column![
-                icon(Icon::Scripts, 32.0, TEXT_SECONDARY),
+                icon(Icon::Scripts, 32.0, text_secondary()),
                 muted("Nenhum script ainda."),
                 primary_button("Criar o primeiro", Some(Message::NewScript)),
             ]
@@ -156,17 +156,17 @@ fn script_card<'a>(section: &'a Scripts, script: &'a Script) -> Element<'a, Mess
 
     let mut badges = Row::new().spacing(units(2)).align_y(Alignment::Center);
     if !script.meta.active {
-        badges = badges.push(badge("Inativo", TEXT_SECONDARY));
+        badges = badges.push(badge("Inativo", text_secondary()));
     }
     if let Some(schedule) = &script.meta.schedule {
         let label = match scripts::next_run(schedule, section.now()) {
             Some(at) if script.meta.active => format!("Próxima: {}", moment(at)),
             _ => "Agendado".to_string(),
         };
-        badges = badges.push(badge(label, ACCENT));
+        badges = badges.push(badge(label, accent()));
     }
     if script.meta.confirm {
-        badges = badges.push(badge("Confirma antes", WARNING));
+        badges = badges.push(badge("Confirma antes", warning()));
     }
 
     let mut info = column![
@@ -182,8 +182,8 @@ fn script_card<'a>(section: &'a Scripts, script: &'a Script) -> Element<'a, Mess
     if let Some(problem) = &script.problem {
         info = info.push(
             row![
-                icon(Icon::Warning, ICON_SIZE - 6.0, WARNING),
-                small(problem.as_str()).color(WARNING)
+                icon(Icon::Warning, ICON_SIZE - 6.0, warning()),
+                small(problem.as_str()).color(warning())
             ]
             .spacing(units(1))
             .align_y(Alignment::Center),
@@ -246,7 +246,7 @@ fn console_view<'a>(lines: impl Iterator<Item = (bool, &'a str)>) -> Element<'a,
             text(line)
                 .font(Font::MONOSPACE)
                 .size(FONT_SIZE_SMALL + 1.0)
-                .color(if error { DANGER } else { TEXT_PRIMARY }),
+                .color(if error { danger() } else { text_primary() }),
         )
     });
     container(
@@ -283,10 +283,10 @@ fn detail(section: &Scripts) -> Element<'_, Message> {
             )
         }
         (None, Some(run)) => match &run.status {
-            None => ("Executando".to_string(), ACCENT),
+            None => ("Executando".to_string(), accent()),
             Some(status) => (status.describe(), status_color(status)),
         },
-        (None, None) => ("Saída".to_string(), TEXT_SECONDARY),
+        (None, None) => ("Saída".to_string(), text_secondary()),
     };
 
     let console: Element<'_, Message> = match (viewing_history, run) {
@@ -318,7 +318,7 @@ fn detail(section: &Scripts) -> Element<'_, Message> {
                                 .width(8)
                                 .height(8)
                                 .style(style::dot(color)),
-                            small(moment(execution.started_at)).color(TEXT_PRIMARY),
+                            small(moment(execution.started_at)).color(text_primary()),
                             small(label).color(color),
                             space().width(Length::Fill),
                             small(execution.origin.label()),
@@ -434,7 +434,7 @@ fn form_view<'a>(
     let preview: Element<'_, Message> = match form.preview(now) {
         Ok(Some(at)) => small(format!("Próxima execução: {}", moment(at))).into(),
         Ok(None) => small("Sem agendamento: só roda quando você mandar.").into(),
-        Err(error) => small(error).color(DANGER).into(),
+        Err(error) => small(error).color(danger()).into(),
     };
     col = col.push(labeled(
         "Agendamento (cron com segundos, opcional)",
@@ -476,7 +476,7 @@ fn form_view<'a>(
         .align_y(Alignment::End),
     );
     if let Some(error) = error {
-        col = col.push(body(error).color(DANGER));
+        col = col.push(body(error).color(danger()));
     }
     col = col.push(
         row![

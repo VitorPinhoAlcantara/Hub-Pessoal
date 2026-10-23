@@ -14,7 +14,7 @@ pub const COLLAPSED_WIDTH: f32 = 340.0;
 pub const EXPANDED_WIDTH: f32 = 400.0;
 
 fn control<'a>(glyph: Icon, message: Option<Message>) -> Element<'a, Message> {
-    icon_button(glyph, TEXT_PRIMARY, message).into()
+    icon_button(glyph, text_primary(), message).into()
 }
 
 fn play_button<'a>(paused: bool, message: Option<Message>) -> Element<'a, Message> {
@@ -22,7 +22,7 @@ fn play_button<'a>(paused: bool, message: Option<Message>) -> Element<'a, Messag
         container(icon(
             if paused { Icon::Play } else { Icon::Pause },
             ICON_SIZE - 2.0,
-            BG_BASE,
+            on_accent(),
         ))
         .center_x(units(8))
         .center_y(units(8)),
@@ -52,12 +52,16 @@ fn single_line<'a>(
 fn now_playing(player: &Player) -> (String, String, bool, bool) {
     if player.is_active() {
         let status = player.status();
-        let title = status
-            .title
-            .clone()
-            .unwrap_or_else(|| "Carregando".to_string());
-        let subtitle = match (status.playlist_pos, status.playlist.len()) {
-            (Some(pos), total) if total > 1 => format!("Faixa {} de {total}", pos + 1),
+        let title = status.title.clone().unwrap_or_else(|| {
+            if player.loading_playlist() {
+                "Carregando playlist".to_string()
+            } else {
+                "Carregando".to_string()
+            }
+        });
+        let items = player.queue_items();
+        let subtitle = match items.iter().position(|(_, current)| *current) {
+            Some(pos) if items.len() > 1 => format!("Faixa {} de {}", pos + 1, items.len()),
             _ => "YouTube".to_string(),
         };
         (title, subtitle, status.paused, true)
@@ -126,10 +130,10 @@ fn install_hint(os: Os) -> &'static str {
 fn collapsed(player: &Player) -> Element<'_, Message> {
     let (title, subtitle, _, _) = now_playing(player);
     row![
-        icon(Icon::Player, ICON_SIZE, ACCENT),
+        icon(Icon::Player, ICON_SIZE, accent()),
         column![
-            single_line(title, FONT_SIZE, TEXT_PRIMARY),
-            single_line(subtitle, FONT_SIZE_SMALL, TEXT_SECONDARY),
+            single_line(title, FONT_SIZE, text_primary()),
+            single_line(subtitle, FONT_SIZE_SMALL, text_secondary()),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -146,10 +150,10 @@ fn expanded(player: &Player) -> Element<'_, Message> {
     let mut col = Column::new().spacing(units(3)).width(EXPANDED_WIDTH);
 
     let mut header = row![
-        icon(Icon::Player, ICON_SIZE, ACCENT),
+        icon(Icon::Player, ICON_SIZE, accent()),
         column![
-            single_line(title, FONT_SIZE_HEADING, TEXT_PRIMARY),
-            single_line(subtitle, FONT_SIZE_SMALL, TEXT_SECONDARY),
+            single_line(title, FONT_SIZE_HEADING, text_primary()),
+            single_line(subtitle, FONT_SIZE_SMALL, text_secondary()),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -185,7 +189,7 @@ fn expanded(player: &Player) -> Element<'_, Message> {
         .spacing(units(2))
         .align_y(Alignment::Center);
     if mpv {
-        control_row = control_row.push(icon(Icon::Volume, ICON_SIZE - 4.0, TEXT_SECONDARY));
+        control_row = control_row.push(icon(Icon::Volume, ICON_SIZE - 4.0, text_secondary()));
         control_row = control_row.push(
             slider(0.0..=100.0, player.status().volume, Message::VolumeChanged)
                 .step(1.0)
@@ -204,7 +208,7 @@ fn expanded(player: &Player) -> Element<'_, Message> {
                 Message::UrlChanged
             )
             .on_submit(Message::PlayInput),
-            button(icon(Icon::Play, ICON_SIZE - 4.0, BG_BASE))
+            button(icon(Icon::Play, ICON_SIZE - 4.0, on_accent()))
                 .padding(units(2))
                 .style(style::primary)
                 .on_press_maybe((!player.url().trim().is_empty()).then_some(Message::PlayInput)),
@@ -225,8 +229,8 @@ fn expanded(player: &Player) -> Element<'_, Message> {
             container(
                 column![
                     row![
-                        icon(Icon::Warning, ICON_SIZE - 4.0, WARNING),
-                        body(missing).color(WARNING)
+                        icon(Icon::Warning, ICON_SIZE - 4.0, warning()),
+                        body(missing).color(warning())
                     ]
                     .spacing(units(2)),
                     small(install_hint(player.os())),
@@ -235,36 +239,38 @@ fn expanded(player: &Player) -> Element<'_, Message> {
             )
             .padding(units(3))
             .width(Length::Fill)
-            .style(style::outlined(WARNING, false)),
+            .style(style::outlined(warning(), false)),
         );
     }
 
-    for (message, color) in [(player.error(), DANGER), (player.notice(), TEXT_SECONDARY)] {
+    for (message, color) in [
+        (player.error(), danger()),
+        (player.notice(), text_secondary()),
+    ] {
         if let Some(message) = message {
             col = col.push(
                 row![
                     small(message).color(color).width(Length::Fill),
-                    icon_button(Icon::Close, TEXT_SECONDARY, Some(Message::ErrorDismissed)),
+                    icon_button(Icon::Close, text_secondary(), Some(Message::ErrorDismissed)),
                 ]
                 .align_y(Alignment::Center),
             );
         }
     }
 
-    let status = player.status();
-    if mpv && status.playlist.len() > 1 {
-        let items = status.playlist.iter().enumerate().fold(
+    let queue = player.queue_items();
+    if mpv && queue.len() > 1 {
+        let items = queue.into_iter().enumerate().fold(
             Column::new().spacing(2),
-            |col, (index, entry)| {
-                let current = status.playlist_pos == Some(index);
+            |col, (index, (label, current))| {
                 col.push(
                     button(
                         row![
                             small(format!("{}", index + 1)).width(24),
                             single_line(
-                                entry.label().to_string(),
+                                label,
                                 FONT_SIZE_SMALL + 1.0,
-                                if current { ACCENT } else { TEXT_PRIMARY },
+                                if current { accent() } else { text_primary() },
                             ),
                         ]
                         .align_y(Alignment::Center),
@@ -301,12 +307,12 @@ fn expanded(player: &Player) -> Element<'_, Message> {
                                             Icon::Star
                                         },
                                         ICON_SIZE - 6.0,
-                                        WARNING
+                                        warning()
                                     ),
                                     single_line(
                                         favorite.label().to_string(),
                                         FONT_SIZE_SMALL + 1.0,
-                                        TEXT_PRIMARY
+                                        text_primary()
                                     ),
                                 ]
                                 .spacing(units(2))
@@ -318,7 +324,7 @@ fn expanded(player: &Player) -> Element<'_, Message> {
                             .on_press(Message::Play(favorite.url.clone())),
                             icon_button(
                                 Icon::Close,
-                                TEXT_SECONDARY,
+                                text_secondary(),
                                 Some(Message::FavoriteRemoved(favorite.url.clone()))
                             ),
                         ]

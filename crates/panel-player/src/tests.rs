@@ -85,13 +85,12 @@ fn properties_update_status_and_name_favorite() {
 #[test]
 fn commands_wait_for_connection_and_are_flushed() {
     let mut player = player(missing());
-    send(&mut player, [Message::TogglePause, Message::Next]);
-    assert_eq!(player.queued, vec![Command::TogglePause, Command::Next]);
+    send(&mut player, [Message::TogglePause, Message::VolumeChanged(30.0)]);
+    assert_eq!(player.queued, vec![Command::TogglePause]);
     let (sender, mut receiver) = futures::channel::mpsc::unbounded();
     send(&mut player, [Message::Mpv(MpvEvent::Connected(sender))]);
     assert!(player.queued.is_empty());
     assert_eq!(receiver.try_recv().unwrap(), Command::TogglePause);
-    assert_eq!(receiver.try_recv().unwrap(), Command::Next);
     send(
         &mut player,
         [
@@ -197,4 +196,238 @@ fn system_play_pause_updates_optimistically_and_hides_no_media() {
         [Message::SystemCommandDone(Err("falhou".into()))],
     );
     assert_eq!(player.notice(), Some("falhou"));
+}
+
+fn watch(id: &str) -> String {
+    format!("https://www.youtube.com/watch?v={id}")
+}
+
+fn info(ids: &[&str]) -> PlaylistInfo {
+    PlaylistInfo {
+        title: Some("Lista".into()),
+        entries: ids
+            .iter()
+            .map(|id| PlaylistEntry {
+                id: (*id).into(),
+                title: Some(id.to_uppercase()),
+            })
+            .collect(),
+    }
+}
+
+fn entry(id: &str) -> PlaylistEntry {
+    PlaylistEntry {
+        id: id.into(),
+        title: Some(id.to_uppercase()),
+    }
+}
+
+fn queue_of(player: &mut Player, ids: &[&str], index: usize) {
+    player.queue = ids.iter().map(|id| entry(id)).collect();
+    player.index = index;
+}
+
+#[test]
+fn resolved_playlist_builds_queue_around_current_video() {
+    let mut player = player(missing());
+    queue_of(&mut player, &["c"], 0);
+    player.listing = Some(Listing {
+        key: "k".into(),
+        video: Some("c".into()),
+    });
+    send(
+        &mut player,
+        [Message::PlaylistResolved(
+            "k".into(),
+            Some(info(&["a", "b", "c", "d"])),
+        )],
+    );
+    assert_eq!(player.queue.len(), 4);
+    assert_eq!(player.index, 2);
+    assert_eq!(
+        player.queued,
+        vec![Command::Append {
+            url: watch("d"),
+            title: Some("D".into())
+        }]
+    );
+    let items = player.queue_items();
+    assert_eq!(items[2], ("C".to_string(), true));
+    assert!(!player.loading_playlist());
+}
+
+#[test]
+fn playlist_only_link_loads_first_item_when_list_arrives() {
+    let mut player = player(missing());
+    player.listing = Some(Listing {
+        key: "k".into(),
+        video: None,
+    });
+    player.waiting_list = true;
+    assert!(player.loading_playlist());
+    send(
+        &mut player,
+        [Message::PlaylistResolved(
+            "k".into(),
+            Some(info(&["a", "b"])),
+        )],
+    );
+    assert_eq!(
+        player.queued,
+        vec![
+            Command::Load {
+                url: watch("a"),
+                title: Some("A".into())
+            },
+            Command::Append {
+                url: watch("b"),
+                title: Some("B".into())
+            },
+        ]
+    );
+    assert!(!player.loading_playlist());
+}
+
+#[test]
+fn failed_list_without_first_item_shows_error_and_stale_key_is_ignored() {
+    let mut player = player(missing());
+    player.listing = Some(Listing {
+        key: "k".into(),
+        video: None,
+    });
+    send(
+        &mut player,
+        [Message::PlaylistResolved("outra".into(), None)],
+    );
+    assert!(player.error().is_none());
+    send(&mut player, [Message::PlaylistResolved("k".into(), None)]);
+    assert!(player.error().is_some());
+}
+
+#[test]
+fn command_failure_with_title_is_retried_without_title() {
+    let mut player = player(missing());
+    let titled = Command::Load {
+        url: watch("a"),
+        title: Some("A".into()),
+    };
+    send(
+        &mut player,
+        [Message::Mpv(MpvEvent::Failed(titled, "invalid".into()))],
+    );
+    assert!(!player.titles_ok);
+    assert_eq!(
+        player.queued,
+        vec![Command::Load {
+            url: watch("a"),
+            title: None
+        }]
+    );
+}
+
+#[test]
+fn finishing_a_track_moves_to_preloaded_next_and_prefetches_again() {
+    let mut player = player(missing());
+    queue_of(&mut player, &["a", "b", "c"], 0);
+    player.preloaded = Some("b".into());
+    send(
+        &mut player,
+        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(Some(1))))],
+    );
+    assert_eq!(player.index, 1);
+    assert_eq!(
+        player.queued,
+        vec![
+            Command::PlaylistRemove(0),
+            Command::Append {
+                url: watch("c"),
+                title: Some("C".into())
+            },
+        ]
+    );
+    player.queued.clear();
+    send(
+        &mut player,
+        [Message::Mpv(MpvEvent::Property(Property::PlaylistPos(Some(0))))],
+    );
+    assert_eq!(player.index, 1);
+    assert!(player.queued.is_empty());
+}
+
+#[test]
+fn direct_url_is_appended_only_while_still_next() {
+    let mut player = player(missing());
+    queue_of(&mut player, &["a", "b", "c"], 0);
+    send(
+        &mut player,
+        [Message::DirectResolved("c".into(), Some("https://cdn/c".into()))],
+    );
+    assert!(player.queued.is_empty());
+    send(
+        &mut player,
+        [Message::DirectResolved("b".into(), Some("https://cdn/b".into()))],
+    );
+    assert_eq!(
+        player.queued,
+        vec![Command::Append {
+            url: "https://cdn/b".into(),
+            title: Some("B".into())
+        }]
+    );
+    player.queued.clear();
+    send(
+        &mut player,
+        [Message::DirectResolved("b".into(), Some("https://cdn/b2".into()))],
+    );
+    assert!(player.queued.is_empty());
+}
+
+#[test]
+fn skip_and_queue_click_load_tracks_from_own_queue() {
+    let mut player = player(missing());
+    queue_of(&mut player, &["a", "b", "c"], 0);
+    send(&mut player, [Message::Next]);
+    assert_eq!(player.index, 1);
+    assert_eq!(
+        player.queued[0],
+        Command::Load {
+            url: watch("b"),
+            title: Some("B".into())
+        }
+    );
+    player.queued.clear();
+    send(&mut player, [Message::PlayIndex(0)]);
+    assert_eq!(player.index, 0);
+    assert_eq!(
+        player.queued[0],
+        Command::Load {
+            url: watch("a"),
+            title: Some("A".into())
+        }
+    );
+    player.queued.clear();
+    send(&mut player, [Message::Previous]);
+    assert!(player.queued.is_empty());
+}
+
+#[test]
+fn skip_moves_between_favorites_when_queue_has_no_neighbor() {
+    let mut player = player(missing());
+    player.favorite_order = vec![
+        "https://youtu.be/a".into(),
+        "https://youtu.be/b".into(),
+        "https://youtu.be/c".into(),
+    ];
+    player.current_url = Some("https://youtu.be/b".into());
+    assert_eq!(player.favorite_neighbor(1).as_deref(), Some("https://youtu.be/c"));
+    assert_eq!(player.favorite_neighbor(-1).as_deref(), Some("https://youtu.be/a"));
+    player.current_url = Some("https://youtu.be/c".into());
+    assert_eq!(player.favorite_neighbor(1), None);
+}
+
+#[test]
+fn placeholder_titles_do_not_name_favorites() {
+    assert!(hub_core::player::is_placeholder_title("watch?v=S02YkyF9u1o"));
+    assert!(hub_core::player::is_placeholder_title("https://www.youtube.com/watch?v=a"));
+    assert!(!hub_core::player::is_placeholder_title("Flegrea e Hornacis"));
 }

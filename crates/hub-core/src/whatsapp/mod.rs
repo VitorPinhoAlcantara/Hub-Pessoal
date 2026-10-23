@@ -1,8 +1,10 @@
 pub mod bridge;
 pub mod protocol;
+pub mod service;
+
+pub use service::{Status, WhatsAppLink};
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -95,6 +97,7 @@ pub struct Conversation {
     pub archived: bool,
     pub last_at: Option<NaiveDateTime>,
     pub preview: Option<String>,
+    pub notify: bool,
 }
 
 impl Conversation {
@@ -267,26 +270,57 @@ pub fn messages(conn: &Connection, jid: &str, limit: usize) -> rusqlite::Result<
         .collect()
 }
 
+const CONVERSATION_COLUMNS: &str =
+    "SELECT c.jid, c.nome, a.apelido, c.grupo, c.arquivada, c.ultima_em,
+        (SELECT CASE WHEN m.texto <> '' THEN m.texto ELSE '[' || m.tipo || ']' END
+         FROM wa_mensagens m WHERE m.jid = c.jid ORDER BY m.em DESC LIMIT 1),
+        c.notificar
+     FROM wa_conversas c LEFT JOIN wa_apelidos a ON a.jid = c.jid";
+
+fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        jid: row.get(0)?,
+        name: row.get(1)?,
+        alias: row.get(2)?,
+        group: row.get(3)?,
+        archived: row.get(4)?,
+        last_at: row.get(5)?,
+        preview: row.get(6)?,
+        notify: row.get(7)?,
+    })
+}
+
 pub fn conversations(conn: &Connection) -> rusqlite::Result<Vec<Conversation>> {
-    let mut stmt = conn.prepare(
-        "SELECT c.jid, c.nome, a.apelido, c.grupo, c.arquivada, c.ultima_em,
-            (SELECT CASE WHEN m.texto <> '' THEN m.texto ELSE '[' || m.tipo || ']' END
-             FROM wa_mensagens m WHERE m.jid = c.jid ORDER BY m.em DESC LIMIT 1)
-         FROM wa_conversas c LEFT JOIN wa_apelidos a ON a.jid = c.jid
-         ORDER BY c.ultima_em IS NULL, c.ultima_em DESC, COALESCE(a.apelido, c.nome)",
+    let mut stmt = conn.prepare(&format!(
+        "{CONVERSATION_COLUMNS}
+         ORDER BY c.ultima_em IS NULL, c.ultima_em DESC, COALESCE(a.apelido, c.nome)"
+    ))?;
+    stmt.query_map([], conversation_from_row)?.collect()
+}
+
+pub fn conversation(conn: &Connection, jid: &str) -> rusqlite::Result<Option<Conversation>> {
+    conn.query_row(
+        &format!("{CONVERSATION_COLUMNS} WHERE c.jid = ?1"),
+        [jid],
+        conversation_from_row,
+    )
+    .optional()
+}
+
+pub fn set_notify(conn: &Connection, jid: &str, notify: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE wa_conversas SET notificar = ?2 WHERE jid = ?1",
+        params![jid, notify],
     )?;
-    stmt.query_map([], |row| {
-        Ok(Conversation {
-            jid: row.get(0)?,
-            name: row.get(1)?,
-            alias: row.get(2)?,
-            group: row.get(3)?,
-            archived: row.get(4)?,
-            last_at: row.get(5)?,
-            preview: row.get(6)?,
-        })
-    })?
-    .collect()
+    Ok(())
+}
+
+pub fn is_group_jid(jid: &str) -> bool {
+    jid.ends_with("@g.us")
+}
+
+pub fn is_private_jid(jid: &str) -> bool {
+    jid.ends_with("@s.whatsapp.net") || jid.ends_with("@lid")
 }
 
 pub fn known_jids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -418,19 +452,6 @@ pub fn sidecar_command(data_dir: &Path) -> CommandSpec {
     CommandSpec::new(program)
         .arg("--dados")
         .arg(data_dir.as_os_str().to_os_string())
-}
-
-#[derive(Clone, Default)]
-pub struct WhatsAppLink(Arc<Mutex<Option<BridgeHandle>>>);
-
-impl WhatsAppLink {
-    pub fn set(&self, handle: Option<BridgeHandle>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = handle;
-    }
-
-    pub fn get(&self) -> Option<BridgeHandle> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use crate::player::PlayerCommand;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HubEvent {
     AgendaChanged,
+    NotesChanged,
     ScriptsChanged,
     ShortcutsChanged,
     ConfigChanged,
@@ -16,6 +17,11 @@ pub enum HubEvent {
     PlayRequested(String),
     PlayerControl(PlayerCommand),
     WhatsAppChanged,
+    WhatsAppOpen(String),
+    NotificationsChanged,
+    MuteRequested(u32),
+    UnmuteRequested,
+    RunScriptRequested(String),
 }
 
 #[derive(Clone)]

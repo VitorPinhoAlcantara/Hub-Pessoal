@@ -8,7 +8,7 @@ pub fn show(
 ) -> Result<(), PlatformError> {
     let mut native = notify_rust::Notification::new();
     native
-        .appname("hub")
+        .appname(crate::channel::app_name())
         .summary(&notification.title)
         .body(&notification.body);
     for (id, label) in &notification.actions {

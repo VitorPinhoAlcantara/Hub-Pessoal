@@ -169,7 +169,7 @@ async fn drive(
     }
     tracing::info!(script = %script.id, origem = origin.as_str(), status = ?status, "script executado");
     if origin == Origin::Scheduled && !status.succeeded() {
-        let _ = ctx.platform.notify(
+        ctx.notify(
             Notification {
                 title: format!("Script {} falhou", script.meta.name),
                 body: status.describe(),

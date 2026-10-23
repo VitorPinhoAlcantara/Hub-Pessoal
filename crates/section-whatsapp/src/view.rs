@@ -27,13 +27,13 @@ fn short_time(at: NaiveDateTime) -> String {
 
 fn status_line(section: &WhatsApp) -> Element<'_, Message> {
     let (label, color) = match section.connection() {
-        Connection::Starting => ("Iniciando".to_string(), TEXT_SECONDARY),
-        Connection::WaitingQr => ("Aguardando pareamento".to_string(), WARNING),
-        Connection::Qr(_) => ("Escaneie o QR code".to_string(), WARNING),
+        Connection::Starting => ("Iniciando".to_string(), text_secondary()),
+        Connection::WaitingQr => ("Aguardando pareamento".to_string(), warning()),
+        Connection::Qr(_) => ("Escaneie o QR code".to_string(), warning()),
         Connection::Connected(_) => ("Conectado".to_string(), WHATSAPP_GREEN),
-        Connection::Offline(_) => ("Desconectado".to_string(), DANGER),
+        Connection::Offline(_) => ("Desconectado".to_string(), danger()),
     };
-    row![
+    let status = row![
         container(space())
             .width(8)
             .height(8)
@@ -41,8 +41,18 @@ fn status_line(section: &WhatsApp) -> Element<'_, Message> {
         small(label).color(color),
     ]
     .spacing(units(2))
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center);
+    if section.is_running() {
+        row![
+            status,
+            space().width(Length::Fill),
+            ghost_button("Desligar", Some(Message::SwitchOff)),
+        ]
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        status.into()
+    }
 }
 
 fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Element<'a, Message> {
@@ -72,7 +82,7 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
                 container(
                     text(conversation.preview.clone().unwrap_or_default())
                         .size(FONT_SIZE_SMALL)
-                        .color(TEXT_SECONDARY)
+                        .color(text_secondary())
                         .wrapping(text::Wrapping::None)
                 )
                 .clip(true)
@@ -170,7 +180,7 @@ fn media_view<'a>(section: &'a WhatsApp, message: &'a ChatMessage) -> Element<'a
             .into(),
         Some(Media::Loading) => small("Baixando imagem").into(),
         Some(Media::Failed(error)) => column![
-            small(error.as_str()).color(DANGER),
+            small(error.as_str()).color(danger()),
             icon_label_button(Icon::Refresh, "Tentar de novo", Some(open)),
         ]
         .spacing(units(1))
@@ -240,7 +250,7 @@ fn pairing(section: &WhatsApp) -> Element<'_, Message> {
         .align_x(Alignment::Center)
         .into(),
         Connection::Offline(reason) if reason.starts_with(crate::SIDECAR_MISSING) => column![
-            icon(Icon::Warning, 28.0, WARNING),
+            icon(Icon::Warning, 28.0, warning()),
             heading("Falta o componente do WhatsApp"),
             muted("O hub conversa com o WhatsApp por um programa auxiliar chamado whatsapp-bridge, escrito em Go. Ele precisa estar na mesma pasta do hub."),
             column![
@@ -258,7 +268,7 @@ fn pairing(section: &WhatsApp) -> Element<'_, Message> {
         .align_x(Alignment::Center)
         .into(),
         Connection::Offline(reason) => column![
-            icon(Icon::Warning, 28.0, WARNING),
+            icon(Icon::Warning, 28.0, warning()),
             heading("WhatsApp desconectado"),
             muted(reason.as_str()),
             primary_icon_button(Icon::Refresh, "Tentar de novo", Some(Message::Retry)),
@@ -342,7 +352,7 @@ fn chat(section: &WhatsApp) -> Element<'_, Message> {
     let composer: Element<'_, Message> = if section.is_connected() {
         row![
             text_field("Mensagem", section.draft(), Message::DraftChanged).on_submit(Message::Send),
-            button(icon(Icon::Send, ICON_SIZE - 2.0, BG_BASE))
+            button(icon(Icon::Send, ICON_SIZE - 2.0, on_accent()))
                 .padding(units(2))
                 .style(style::primary)
                 .on_press_maybe(
@@ -367,8 +377,8 @@ pub fn view(section: &WhatsApp) -> Element<'_, Message> {
         right = right.push(
             container(
                 row![
-                    body(error).color(DANGER).width(Length::Fill),
-                    icon_button(Icon::Close, TEXT_SECONDARY, Some(Message::ErrorDismissed)),
+                    body(error).color(danger()).width(Length::Fill),
+                    icon_button(Icon::Close, text_secondary(), Some(Message::ErrorDismissed)),
                 ]
                 .align_y(Alignment::Center),
             )

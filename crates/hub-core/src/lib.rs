@@ -1,4 +1,6 @@
 pub mod agenda;
+pub mod backup;
+pub mod channel;
 pub mod clock;
 pub mod config;
 pub mod confirm;
@@ -6,6 +8,8 @@ pub mod context;
 pub mod db;
 pub mod events;
 pub mod logging;
+pub mod notes;
+pub mod notifications;
 pub mod paths;
 pub mod per_os;
 pub mod platform;
@@ -13,6 +17,9 @@ pub mod player;
 pub mod scheduler;
 pub mod scripts;
 pub mod shortcuts;
+pub mod update;
+pub mod vault;
+pub mod wallpaper;
 pub mod watcher;
 pub mod whatsapp;
 

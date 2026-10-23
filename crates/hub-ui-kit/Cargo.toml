@@ -8,3 +8,4 @@ publish = false
 hub-core.workspace = true
 iced.workspace = true
 rfd.workspace = true
+fontdb = "0.23"

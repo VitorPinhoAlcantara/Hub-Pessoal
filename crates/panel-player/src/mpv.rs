@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -25,7 +26,24 @@ const CONNECT_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    LoadFile(String),
+    Load {
+        url: String,
+        title: Option<String>,
+    },
+    Append {
+        url: String,
+        title: Option<String>,
+    },
+    InsertAt {
+        url: String,
+        index: usize,
+        title: Option<String>,
+    },
+    PlaylistRemove(usize),
+    PlaylistMove {
+        from: usize,
+        to: usize,
+    },
     TogglePause,
     Next,
     Previous,
@@ -35,10 +53,60 @@ pub enum Command {
     Quit,
 }
 
+pub fn file_options(title: &str) -> String {
+    format!("force-media-title=%{}%{}", title.len(), title)
+}
+
+fn load_arguments(url: &str, flag: &str, index: Option<usize>, title: Option<&str>) -> Value {
+    match (title, index) {
+        (Some(title), index) => {
+            let index = index.map_or(-1, |index| index as i64);
+            json!(["loadfile", url, flag, index, file_options(title)])
+        }
+        (None, Some(index)) => json!(["loadfile", url, flag, index]),
+        (None, None) => json!(["loadfile", url, flag]),
+    }
+}
+
 impl Command {
+    pub fn without_title(&self) -> Option<Command> {
+        match self {
+            Command::Load {
+                url,
+                title: Some(_),
+            } => Some(Command::Load {
+                url: url.clone(),
+                title: None,
+            }),
+            Command::Append {
+                url,
+                title: Some(_),
+            } => Some(Command::Append {
+                url: url.clone(),
+                title: None,
+            }),
+            Command::InsertAt {
+                url,
+                index,
+                title: Some(_),
+            } => Some(Command::InsertAt {
+                url: url.clone(),
+                index: *index,
+                title: None,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn arguments(&self) -> Value {
         match self {
-            Command::LoadFile(url) => json!(["loadfile", url, "replace"]),
+            Command::Load { url, title } => load_arguments(url, "replace", None, title.as_deref()),
+            Command::Append { url, title } => load_arguments(url, "append", None, title.as_deref()),
+            Command::InsertAt { url, index, title } => {
+                load_arguments(url, "insert-at", Some(*index), title.as_deref())
+            }
+            Command::PlaylistRemove(index) => json!(["playlist-remove", index]),
+            Command::PlaylistMove { from, to } => json!(["playlist-move", from, to]),
             Command::TogglePause => json!(["cycle", "pause"]),
             Command::Next => json!(["playlist-next", "weak"]),
             Command::Previous => json!(["playlist-prev", "weak"]),
@@ -132,7 +200,19 @@ pub fn parse(line: &str) -> Option<Property> {
 pub enum MpvEvent {
     Connected(mpsc::UnboundedSender<Command>),
     Property(Property),
+    Failed(Command, String),
     Disconnected(String),
+}
+
+pub fn parse_response(line: &str) -> Option<(u64, Option<String>)> {
+    let value: Value = serde_json::from_str(line.trim()).ok()?;
+    let id = value.get("request_id")?.as_u64()?;
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|error| *error != "success")
+        .map(str::to_string);
+    Some((id, error))
 }
 
 pub fn connect(path: String) -> impl Stream<Item = MpvEvent> + Send + 'static {
@@ -175,12 +255,18 @@ async fn drive(path: String, out: mpsc::UnboundedSender<MpvEvent>) {
     let _ = out.unbounded_send(MpvEvent::Connected(commands_tx));
     let mut lines = BufReader::new(reader).lines();
     let mut request_id = 100;
+    let mut inflight: HashMap<u64, Command> = HashMap::new();
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
                 Ok(Some(line)) => {
                     if let Some(property) = parse(&line) {
                         let _ = out.unbounded_send(MpvEvent::Property(property));
+                    } else if let Some((id, error)) = parse_response(&line)
+                        && let Some(command) = inflight.remove(&id)
+                        && let Some(error) = error
+                    {
+                        let _ = out.unbounded_send(MpvEvent::Failed(command, error));
                     }
                 }
                 _ => {
@@ -191,6 +277,7 @@ async fn drive(path: String, out: mpsc::UnboundedSender<MpvEvent>) {
             command = commands.next() => match command {
                 Some(command) => {
                     request_id += 1;
+                    inflight.insert(request_id, command.clone());
                     if writer.write_all(encode(&command, request_id).as_bytes()).await.is_err() {
                         let _ = out.unbounded_send(MpvEvent::Disconnected("O mpv parou de responder".to_string()));
                         return;
@@ -200,6 +287,26 @@ async fn drive(path: String, out: mpsc::UnboundedSender<MpvEvent>) {
             },
         }
     }
+}
+
+pub fn spawn_args(ytdlp: Option<&Path>, ipc_path: &str, volume: f64) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(ytdlp) = ytdlp {
+        args.push(format!(
+            "--script-opts=ytdl_hook-ytdl_path={}",
+            ytdlp.display()
+        ));
+    }
+    args.extend([
+        "--idle=yes".to_string(),
+        "--no-video".to_string(),
+        "--no-terminal".to_string(),
+        "--force-window=no".to_string(),
+        "--ytdl-format=bestaudio/best".to_string(),
+        format!("--volume={volume}"),
+        format!("--input-ipc-server={ipc_path}"),
+    ]);
+    args
 }
 
 pub struct MpvProcess {
@@ -214,20 +321,8 @@ impl MpvProcess {
         volume: f64,
     ) -> std::io::Result<Self> {
         let mut command = std::process::Command::new(program);
-        if let Some(ytdlp) = ytdlp {
-            command.arg(format!(
-                "--script-opts=ytdl_hook-ytdl_path={}",
-                ytdlp.display()
-            ));
-        }
+        command.args(spawn_args(ytdlp, ipc_path, volume));
         command
-            .arg("--idle=yes")
-            .arg("--no-video")
-            .arg("--no-terminal")
-            .arg("--force-window=no")
-            .arg("--ytdl-format=bestaudio/best")
-            .arg(format!("--volume={volume}"))
-            .arg(format!("--input-ipc-server={ipc_path}"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -332,7 +427,13 @@ mod tests {
 
     #[test]
     fn commands_are_json_lines() {
-        let line = encode(&Command::LoadFile("https://x".into()), 7);
+        let line = encode(
+            &Command::Load {
+                url: "https://x".into(),
+                title: None,
+            },
+            7,
+        );
         assert!(line.ends_with('\n'));
         let value: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(
@@ -387,6 +488,95 @@ mod tests {
     }
 
     #[test]
+    fn spawn_args_set_idle_audio_only_and_no_playlist_option() {
+        let args = spawn_args(Some(Path::new("yt-dlp.exe")), "pipe", 70.0);
+        assert!(args.contains(&"--idle=yes".to_string()));
+        assert!(!args.iter().any(|a| a.contains("yes-playlist")));
+        assert!(!args.iter().any(|a| a.starts_with("--keep-open")));
+        assert!(args.contains(&"--script-opts=ytdl_hook-ytdl_path=yt-dlp.exe".to_string()));
+        assert!(args.contains(&"--input-ipc-server=pipe".to_string()));
+        assert_eq!(spawn_args(None, "p", 5.0).len(), args.len() - 1);
+    }
+
+    #[test]
+    fn loadfile_commands_cover_append_insert_and_titles() {
+        let url = "https://www.youtube.com/watch?v=a";
+        let load = |title: Option<&str>| Command::Load {
+            url: url.into(),
+            title: title.map(str::to_string),
+        };
+        assert_eq!(load(None).arguments(), json!(["loadfile", url, "replace"]));
+        assert_eq!(
+            load(Some("Oi")).arguments(),
+            json!(["loadfile", url, "replace", -1, "force-media-title=%2%Oi"])
+        );
+        let append = Command::Append {
+            url: url.into(),
+            title: None,
+        };
+        assert_eq!(append.arguments(), json!(["loadfile", url, "append"]));
+        let append_titled = Command::Append {
+            url: url.into(),
+            title: Some("A, B".into()),
+        };
+        assert_eq!(
+            append_titled.arguments(),
+            json!(["loadfile", url, "append", -1, "force-media-title=%4%A, B"])
+        );
+        let insert = Command::InsertAt {
+            url: url.into(),
+            index: 2,
+            title: None,
+        };
+        assert_eq!(insert.arguments(), json!(["loadfile", url, "insert-at", 2]));
+        let insert_titled = Command::InsertAt {
+            url: url.into(),
+            index: 0,
+            title: Some("Música".into()),
+        };
+        assert_eq!(
+            insert_titled.arguments(),
+            json!([
+                "loadfile",
+                url,
+                "insert-at",
+                0,
+                "force-media-title=%7%Música"
+            ])
+        );
+        assert_eq!(
+            insert_titled.without_title(),
+            Some(Command::InsertAt {
+                url: url.into(),
+                index: 0,
+                title: None
+            })
+        );
+        assert_eq!(insert.without_title(), None);
+        assert_eq!(
+            Command::PlaylistRemove(3).arguments(),
+            json!(["playlist-remove", 3])
+        );
+        assert_eq!(
+            Command::PlaylistMove { from: 5, to: 1 }.arguments(),
+            json!(["playlist-move", 5, 1])
+        );
+    }
+
+    #[test]
+    fn responses_report_errors_only() {
+        assert_eq!(
+            parse_response(r#"{"request_id":101,"error":"success"}"#),
+            Some((101, None))
+        );
+        assert_eq!(
+            parse_response(r#"{"request_id":102,"error":"invalid parameter"}"#),
+            Some((102, Some("invalid parameter".into())))
+        );
+        assert_eq!(parse_response(r#"{"event":"file-loaded"}"#), None);
+    }
+
+    #[test]
     fn times_are_formatted() {
         assert_eq!(format_time(5.0), "0:05");
         assert_eq!(format_time(125.9), "2:05");
@@ -427,7 +617,10 @@ mod tests {
             panic!("esperava conexão")
         };
         sender
-            .unbounded_send(Command::LoadFile("https://youtu.be/x".into()))
+            .unbounded_send(Command::Load {
+                url: "https://youtu.be/x".into(),
+                title: None,
+            })
             .unwrap();
         let second = tokio::time::timeout(Duration::from_secs(5), events.next())
             .await

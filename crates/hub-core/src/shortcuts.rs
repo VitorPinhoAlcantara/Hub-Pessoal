@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use chrono::NaiveDateTime;
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::per_os::PerOs;
@@ -365,6 +368,57 @@ pub fn open(platform: &dyn Platform, shortcut: &Shortcut) -> Result<()> {
     Ok(())
 }
 
+pub type Usage = HashMap<String, (u32, NaiveDateTime)>;
+
+pub fn usage_key(shortcut: &Shortcut, os: Os) -> String {
+    let kind = match shortcut.kind {
+        ShortcutKind::Program => "programa",
+        ShortcutKind::Folder => "pasta",
+        ShortcutKind::Url => "url",
+        ShortcutKind::Command => "comando",
+    };
+    let target = shortcut.target.for_os(os).unwrap_or_default().trim();
+    format!("{kind}|{target}")
+}
+
+pub fn record_use(conn: &Connection, key: &str, now: NaiveDateTime) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO atalhos_uso (chave, vezes, ultimo_em) VALUES (?1, 1, ?2)
+         ON CONFLICT(chave) DO UPDATE SET vezes = vezes + 1, ultimo_em = excluded.ultimo_em",
+        params![key, now],
+    )?;
+    Ok(())
+}
+
+pub fn usage(conn: &Connection) -> rusqlite::Result<Usage> {
+    let mut stmt = conn.prepare("SELECT chave, vezes, ultimo_em FROM atalhos_uso")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            (row.get::<_, u32>(1)?, row.get(2)?),
+        ))
+    })?;
+    rows.collect()
+}
+
+pub fn most_used(shortcuts: &[Shortcut], usage: &Usage, os: Os, limit: usize) -> Vec<Shortcut> {
+    let mut used: Vec<(&Shortcut, u32, NaiveDateTime)> = shortcuts
+        .iter()
+        .filter_map(|shortcut| {
+            let (times, last) = usage.get(&usage_key(shortcut, os))?;
+            (*times > 0).then_some((shortcut, *times, *last))
+        })
+        .collect();
+    if used.is_empty() {
+        return shortcuts.iter().take(limit).cloned().collect();
+    }
+    used.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    used.into_iter()
+        .take(limit)
+        .map(|(shortcut, _, _)| shortcut.clone())
+        .collect()
+}
+
 pub fn local_path(shortcut: &Shortcut, os: Os) -> Option<PathBuf> {
     let target = shortcut.target.for_os(os)?.trim();
     if target.is_empty() {
@@ -559,6 +613,62 @@ mod tests {
             platform.calls(),
             vec![PlatformCall::RevealPath(PathBuf::from("C:\\Pasta"))]
         );
+    }
+
+    fn at(text: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").unwrap()
+    }
+
+    #[test]
+    fn usage_key_uses_kind_and_os_target() {
+        let program = shortcut("Code", ShortcutKind::Program, " C:\\code.exe ", "");
+        let renamed = Shortcut {
+            name: "Outro nome".into(),
+            ..program.clone()
+        };
+        assert_eq!(usage_key(&program, Os::Windows), "programa|C:\\code.exe");
+        assert_eq!(
+            usage_key(&program, Os::Windows),
+            usage_key(&renamed, Os::Windows)
+        );
+        let linux_only = Shortcut {
+            target: PerOs::split(None, Some("code".into())),
+            ..program
+        };
+        assert_eq!(usage_key(&linux_only, Os::Windows), "programa|");
+        assert_eq!(usage_key(&linux_only, Os::Linux), "programa|code");
+    }
+
+    #[test]
+    fn record_use_counts_and_reads_back() {
+        let db = crate::Database::open_in_memory().unwrap();
+        record_use(db.conn(), "url|a", at("2026-10-22 09:00")).unwrap();
+        record_use(db.conn(), "url|a", at("2026-10-22 10:00")).unwrap();
+        record_use(db.conn(), "url|b", at("2026-10-22 08:00")).unwrap();
+        let usage = usage(db.conn()).unwrap();
+        assert_eq!(usage["url|a"], (2, at("2026-10-22 10:00")));
+        assert_eq!(usage["url|b"], (1, at("2026-10-22 08:00")));
+    }
+
+    #[test]
+    fn most_used_orders_by_count_then_recency() {
+        let items = sample();
+        let mut usage = Usage::new();
+        usage.insert(usage_key(&items[1], Os::Linux), (3, at("2026-10-20 10:00")));
+        usage.insert(usage_key(&items[3], Os::Linux), (3, at("2026-10-21 10:00")));
+        usage.insert(usage_key(&items[5], Os::Linux), (1, at("2026-10-22 10:00")));
+        let top = most_used(&items, &usage, Os::Linux, 10);
+        let found: Vec<&str> = top.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(found, ["x", "b", "z"]);
+        assert_eq!(most_used(&items, &usage, Os::Linux, 2).len(), 2);
+    }
+
+    #[test]
+    fn most_used_falls_back_to_file_order_when_nothing_was_used() {
+        let items = sample();
+        let top = most_used(&items, &Usage::new(), Os::Linux, 2);
+        let found: Vec<&str> = top.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(found, ["a", "b"]);
     }
 
     fn names(items: &[Shortcut]) -> Vec<String> {

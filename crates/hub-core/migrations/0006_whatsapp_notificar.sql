@@ -1,0 +1,1 @@
+ALTER TABLE wa_conversas ADD COLUMN notificar INTEGER NOT NULL DEFAULT 0;

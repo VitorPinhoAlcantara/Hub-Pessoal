@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use super::desktop_entry::{self, DesktopEntry};
 use super::{
     ActionHandler, FileIcon, InstalledApp, MediaSession, Notification, Os, Platform, PlatformError,
-    TrayHandler, TrayImage, collect_files, dedup_apps, file_uri, find_in_path,
+    TrayHandler, TrayImage, TrayMenuState, collect_files, dedup_apps, file_uri, find_in_path,
 };
 
 pub struct LinuxPlatform;
@@ -110,9 +110,10 @@ fn spawn_detached(program: &str, args: &[String]) -> Result<(), PlatformError> {
     Ok(())
 }
 
-fn run_tray_loop() {
+fn run_tray_loop(apply: &mut dyn FnMut()) {
     loop {
-        std::thread::park();
+        apply();
+        std::thread::park_timeout(std::time::Duration::from_millis(500));
     }
 }
 
@@ -344,6 +345,10 @@ impl Platform for LinuxPlatform {
 
     fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError> {
         super::spawn_tray_thread(image, handler, run_tray_loop)
+    }
+
+    fn update_tray(&self, state: TrayMenuState) {
+        super::tray::queue(state);
     }
 
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError> {

@@ -44,7 +44,8 @@ impl HubPaths {
     }
 
     fn from_system() -> Result<Self, PathsError> {
-        let dirs = ProjectDirs::from("", "", "hub").ok_or(PathsError::NoHomeDir)?;
+        let dirs = ProjectDirs::from("", "", crate::channel::Channel::current().dir_name())
+            .ok_or(PathsError::NoHomeDir)?;
         Ok(Self::from_dirs(
             dirs.config_dir().to_path_buf(),
             dirs.data_dir().to_path_buf(),
@@ -70,6 +71,10 @@ impl HubPaths {
 
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("hub.db")
+    }
+
+    pub fn backups_dir(&self) -> PathBuf {
+        self.data_dir.join("backups")
     }
 
     pub fn ensure_dirs(&self) -> Result<(), PathsError> {
@@ -105,15 +110,11 @@ mod tests {
     }
 
     #[test]
-    fn system_paths_end_with_hub() {
+    fn system_paths_use_channel_folder() {
+        let name = crate::channel::Channel::current().dir_name();
         let paths = HubPaths::resolve_with(None).unwrap();
-        assert!(
-            paths
-                .config_dir
-                .components()
-                .any(|c| c.as_os_str() == "hub")
-        );
-        assert!(paths.data_dir.components().any(|c| c.as_os_str() == "hub"));
+        assert!(paths.config_dir.components().any(|c| c.as_os_str() == name));
+        assert!(paths.data_dir.components().any(|c| c.as_os_str() == name));
     }
 
     #[test]

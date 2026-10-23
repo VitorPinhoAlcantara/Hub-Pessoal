@@ -279,6 +279,7 @@ fn phone_labels_and_titles_hide_identifiers() {
         archived: false,
         last_at: None,
         preview: None,
+        notify: false,
     };
     assert_eq!(conversation.title(), "Contato sem nome");
     conversation.group = true;

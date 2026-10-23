@@ -108,11 +108,11 @@ pub fn view<'a, M: Clone + 'a>(menu: &ContextMenu<M>) -> Element<'a, M> {
         .fold(Column::new().spacing(0), |col, item| {
             let enabled = item.message.is_some();
             let color = if !enabled {
-                alpha(TEXT_SECONDARY, 0.5)
+                alpha(text_secondary(), 0.5)
             } else if item.danger {
-                DANGER
+                danger()
             } else {
-                TEXT_PRIMARY
+                text_primary()
             };
             let mut line = row![].spacing(units(2)).align_y(Alignment::Center);
             line = match item.icon {
@@ -129,7 +129,7 @@ pub fn view<'a, M: Clone + 'a>(menu: &ContextMenu<M>) -> Element<'a, M> {
                 line = line.push(
                     text(shortcut.clone())
                         .size(FONT_SIZE_SMALL)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
             }
             col.push(

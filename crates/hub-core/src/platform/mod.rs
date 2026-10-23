@@ -118,10 +118,19 @@ pub struct Notification {
 
 pub type ActionHandler = Box<dyn FnOnce(Option<String>) + Send>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEvent {
     Open,
     Quit,
+    Mute(u32),
+    Unmute,
+    RunScript(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayMenuState {
+    pub scripts: Vec<(String, String)>,
+    pub muted_until: Option<String>,
 }
 
 pub type TrayHandler = Box<dyn Fn(TrayEvent) + Send + Sync>;
@@ -160,6 +169,7 @@ pub trait Platform: Send + Sync {
         on_action: Option<ActionHandler>,
     ) -> Result<(), PlatformError>;
     fn spawn_tray(&self, image: TrayImage, handler: TrayHandler) -> Result<(), PlatformError>;
+    fn update_tray(&self, _state: TrayMenuState) {}
     fn media_session(&self) -> Result<Box<dyn MediaSession>, PlatformError>;
     fn is_fullscreen_app_running(&self) -> bool;
 }
@@ -167,21 +177,23 @@ pub trait Platform: Send + Sync {
 fn spawn_tray_thread(
     image: TrayImage,
     handler: TrayHandler,
-    run_loop: fn(),
+    run_loop: fn(&mut dyn FnMut()),
 ) -> Result<(), PlatformError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("hub-bandeja".to_string())
-        .spawn(move || match tray::build(image, "hub", handler) {
-            Ok(icon) => {
-                let _ = ready_tx.send(Ok(()));
-                run_loop();
-                drop(icon);
-            }
-            Err(error) => {
-                let _ = ready_tx.send(Err(error));
-            }
-        })?;
+        .spawn(
+            move || match tray::build(image, crate::channel::app_name(), handler) {
+                Ok(mut controller) => {
+                    let _ = ready_tx.send(Ok(()));
+                    run_loop(&mut || controller.apply_pending());
+                    drop(controller);
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                }
+            },
+        )?;
     ready_rx.recv().unwrap_or_else(|_| {
         Err(PlatformError::Launch {
             target: "bandeja".to_string(),
@@ -210,6 +222,208 @@ pub fn hide_console_std(command: &mut std::process::Command) {
     #[cfg(not(windows))]
     {
         let _ = command;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowDrag {
+    Move,
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+pub fn begin_window_drag(raw_window: u64, drag: WindowDrag) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows::begin_window_drag(raw_window, drag);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (raw_window, drag);
+        Err(PlatformError::Unsupported("arrastar a janela pelo sistema"))
+    }
+}
+
+pub fn ytdlp_cookie_source(browser: crate::config::BrowserLogin) -> Option<String> {
+    use crate::config::BrowserLogin;
+    match browser {
+        BrowserLogin::None => None,
+        BrowserLogin::Zen => firefox_family_profile(&zen_root()?).map(|p| format!("firefox:{}", p.display())),
+        BrowserLogin::Firefox => Some(
+            firefox_root()
+                .and_then(|root| firefox_family_profile(&root))
+                .map(|p| format!("firefox:{}", p.display()))
+                .unwrap_or_else(|| "firefox".to_string()),
+        ),
+        BrowserLogin::Chrome => Some("chrome".to_string()),
+        BrowserLogin::Edge => Some("edge".to_string()),
+        BrowserLogin::Brave => Some("brave".to_string()),
+    }
+}
+
+fn zen_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("zen"))
+    }
+    #[cfg(not(windows))]
+    {
+        directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".zen"))
+    }
+}
+
+fn firefox_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Mozilla").join("Firefox"))
+    }
+    #[cfg(not(windows))]
+    {
+        directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".mozilla").join("firefox"))
+    }
+}
+
+pub fn firefox_family_profile(root: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(root.join("profiles.ini")).ok()?;
+    let mut install_default = None;
+    let mut marked_default = None;
+    let mut first = None;
+    let mut section = String::new();
+    let mut path = None;
+    let mut relative = true;
+    let mut is_default = false;
+    let mut finish = |section: &str, path: Option<String>, relative: bool, is_default: bool| {
+        let Some(path) = path else {
+            return;
+        };
+        let full = if relative { root.join(&path) } else { PathBuf::from(&path) };
+        if section.starts_with("Install") {
+            install_default.get_or_insert(full);
+        } else if section.starts_with("Profile") {
+            if is_default {
+                marked_default.get_or_insert(full.clone());
+            }
+            first.get_or_insert(full);
+        }
+    };
+    for line in text.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            finish(&section, path.take(), relative, is_default);
+            section = name.to_string();
+            relative = true;
+            is_default = false;
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "Path" => path = Some(value.trim().to_string()),
+            "Default" if section.starts_with("Install") => path = Some(value.trim().to_string()),
+            "Default" => is_default = value.trim() == "1",
+            "IsRelative" => relative = value.trim() != "0",
+            _ => {}
+        }
+    }
+    finish(&section, path.take(), relative, is_default);
+    install_default
+        .or(marked_default)
+        .or(first)
+        .filter(|profile| profile.join("cookies.sqlite").exists())
+}
+
+pub fn transparency_effects_enabled() -> bool {
+    #[cfg(windows)]
+    {
+        windows::transparency_effects_enabled()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+pub fn apply_taskbar_icon(raw_window: u64) {
+    #[cfg(windows)]
+    windows::apply_taskbar_icon(raw_window);
+    #[cfg(not(windows))]
+    let _ = raw_window;
+}
+
+pub fn desktop_wallpaper() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        windows::desktop_wallpaper()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+pub fn apply_acrylic(raw_window: u64, tint: (u8, u8, u8, u8)) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows::apply_acrylic(raw_window, tint)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (raw_window, tint);
+        Err(PlatformError::Unsupported("efeito acrílico da janela"))
+    }
+}
+
+pub fn clear_acrylic(raw_window: u64) {
+    #[cfg(windows)]
+    windows::clear_acrylic(raw_window);
+    #[cfg(not(windows))]
+    let _ = raw_window;
+}
+
+pub fn apply_window_blur(
+    raw_window: u64,
+    blur: crate::config::WindowBlur,
+    tint: (u8, u8, u8, u8),
+) -> Result<(), PlatformError> {
+    use crate::config::WindowBlur;
+    #[cfg(windows)]
+    {
+        windows::clear_acrylic(raw_window);
+        windows::clear_blur(raw_window);
+        match blur {
+            WindowBlur::None => Ok(()),
+            WindowBlur::Light => windows::apply_blur(raw_window, tint),
+            WindowBlur::Strong => windows::apply_acrylic(raw_window, tint),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (raw_window, tint);
+        match blur {
+            WindowBlur::None => Ok(()),
+            _ => Err(PlatformError::Unsupported("desfoque da janela")),
+        }
+    }
+}
+
+pub fn launch_installer(installer: &Path, relaunch: &Path) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows::launch_installer(installer, relaunch)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (installer, relaunch);
+        Err(PlatformError::Unsupported(
+            "atualização automática só está disponível no Windows",
+        ))
     }
 }
 
@@ -388,6 +602,60 @@ pub fn file_uri(path: &Path) -> String {
     uri
 }
 
+pub fn default_shell() -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        match find_program("pwsh") {
+            Some(path) => (
+                path.to_string_lossy().into_owned(),
+                vec!["-NoLogo".to_string()],
+            ),
+            None => ("powershell.exe".to_string(), vec!["-NoLogo".to_string()]),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "/bin/bash".to_string());
+        (shell, Vec::new())
+    }
+}
+
+pub fn home_dir() -> Option<PathBuf> {
+    directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+}
+
+pub fn terminal_font_family() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| OsString::from("C:\\Windows"));
+        dirs.push(PathBuf::from(windir).join("Fonts"));
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+        let candidates = [
+            ("Cascadia Mono", "CascadiaMono.ttf"),
+            ("Consolas", "consola.ttf"),
+        ];
+        candidates
+            .into_iter()
+            .find(|(_, file)| dirs.iter().any(|dir| dir.join(file).is_file()))
+            .map(|(family, _)| family)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +779,48 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].target, "2");
         assert_eq!(result[1].name, "Zed");
+    }
+
+    #[test]
+    fn firefox_family_profile_prefers_install_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for name in ["a.Default Profile", "b.Default (release)"] {
+            std::fs::create_dir_all(root.join("Profiles").join(name)).unwrap();
+            std::fs::write(root.join("Profiles").join(name).join("cookies.sqlite"), "").unwrap();
+        }
+        std::fs::write(
+            root.join("profiles.ini"),
+            "[InstallX]
+Default=Profiles/b.Default (release)
+Locked=1
+
+[Profile1]
+Name=Default Profile
+IsRelative=1
+Path=Profiles/a.Default Profile
+Default=1
+",
+        )
+        .unwrap();
+        assert_eq!(
+            firefox_family_profile(root),
+            Some(root.join("Profiles/b.Default (release)"))
+        );
+        std::fs::write(
+            root.join("profiles.ini"),
+            "[Profile0]
+IsRelative=1
+Path=Profiles/a.Default Profile
+Default=1
+",
+        )
+        .unwrap();
+        assert_eq!(
+            firefox_family_profile(root),
+            Some(root.join("Profiles/a.Default Profile"))
+        );
+        assert_eq!(firefox_family_profile(&root.join("nada")), None);
     }
 
     #[test]

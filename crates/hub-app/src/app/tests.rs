@@ -37,10 +37,12 @@ fn boot_spawns_tray_and_requests_window() {
 }
 
 #[test]
-fn agenda_is_created_lazily_when_window_opens() {
+fn home_is_created_lazily_when_window_opens() {
     let (mut app, _, _) = setup();
+    assert!(app.home.is_none());
     open(&mut app);
-    assert!(app.agenda.is_some());
+    assert!(app.home.is_some());
+    assert!(app.agenda.is_none());
 }
 
 #[test]

@@ -2,25 +2,21 @@ mod view;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use hub_core::HubContext;
-use hub_core::whatsapp::bridge::{self, BridgeEvent, BridgeHandle};
-use hub_core::whatsapp::protocol::Request;
 use hub_core::whatsapp::{
-    self, Conversation, MESSAGES_LIMIT, Message as ChatMessage, WireChatInfo, WireConversation,
-    WireMessage,
+    self, Conversation, MESSAGES_LIMIT, Message as ChatMessage, Status, WireMessage,
 };
 use hub_ui_kit::iced::keyboard::{self, key};
 use hub_ui_kit::iced::widget::image::Handle;
 use hub_ui_kit::iced::widget::qr_code;
-use hub_ui_kit::iced::{Element, Event, Subscription, Task, event, time};
+use hub_ui_kit::iced::{Element, Event, Subscription, Task, event};
 use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section};
 
-pub const SESSION_ENDED: &str = "sessao_encerrada";
+pub use hub_core::whatsapp::service::SESSION_ENDED;
 pub const VISIBLE_CONVERSATIONS: usize = 200;
-const FLUSH_INTERVAL: Duration = Duration::from_millis(400);
 pub const SIDECAR_MISSING: &str = "Não foi possível iniciar";
+pub const SWITCHED_OFF: &str = "Você desligou o WhatsApp. Ele volta a ficar conectado em segundo plano quando você conectar de novo.";
 
 #[derive(Debug, Clone)]
 pub enum Media {
@@ -39,13 +35,9 @@ pub enum Connection {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Bridge(BridgeEvent),
-    ConversationsLoaded(Result<Vec<WireConversation>, String>),
-    ChatInfoLoaded(Result<Vec<WireChatInfo>, String>),
     ArchivedToggled,
     MediaRequested(String),
     MediaLoaded(String, Result<PathBuf, String>),
-    Flush,
     QueryChanged(String),
     Selected(String),
     DraftChanged(String),
@@ -60,14 +52,15 @@ pub enum Message {
     ErrorDismissed,
     ConversationMenu(String),
     RenameConversation(String),
+    ToggleNotify(String),
+    SwitchOff,
     MenuClosed,
 }
 
 pub struct WhatsApp {
     ctx: HubContext,
-    generation: u32,
     connection: Connection,
-    handle: Option<BridgeHandle>,
+    qr: Option<String>,
     conversations: Vec<Conversation>,
     query: String,
     selected: Option<String>,
@@ -79,16 +72,14 @@ pub struct WhatsApp {
     menu: Option<ContextMenu<Message>>,
     show_archived: bool,
     media: HashMap<String, Media>,
-    pending: Vec<WireMessage>,
 }
 
 impl WhatsApp {
     pub fn new(ctx: HubContext) -> Self {
         let mut section = Self {
             ctx,
-            generation: 0,
             connection: Connection::Starting,
-            handle: None,
+            qr: None,
             conversations: Vec::new(),
             query: String::new(),
             selected: None,
@@ -100,10 +91,51 @@ impl WhatsApp {
             menu: None,
             show_archived: false,
             media: HashMap::new(),
-            pending: Vec::new(),
         };
+        section.sync_status();
         section.reload();
         section
+    }
+
+    pub fn open_conversation(&mut self, jid: String) {
+        self.selected = Some(jid);
+        self.alias = None;
+        self.reload();
+    }
+
+    fn sync_status(&mut self) {
+        let status = self.ctx.whatsapp.status();
+        self.connection = match status {
+            Status::Off => Connection::Offline(SWITCHED_OFF.to_string()),
+            Status::Starting => Connection::Starting,
+            Status::WaitingQr => Connection::WaitingQr,
+            Status::Qr(code) => {
+                if self.qr.as_ref() == Some(&code)
+                    && let Connection::Qr(_) = self.connection
+                {
+                    return;
+                }
+                match qr_code::Data::new(code.clone()) {
+                    Ok(data) => {
+                        self.qr = Some(code);
+                        Connection::Qr(data)
+                    }
+                    Err(error) => {
+                        self.error = Some(error.to_string());
+                        Connection::WaitingQr
+                    }
+                }
+            }
+            Status::Connected(jid) => Connection::Connected(jid),
+            Status::Offline(reason) => Connection::Offline(reason),
+        };
+        if let Some(error) = self.ctx.whatsapp.take_error() {
+            self.error = Some(error);
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.ctx.whatsapp.is_running()
     }
 
     pub fn connection(&self) -> &Connection {
@@ -111,7 +143,7 @@ impl WhatsApp {
     }
 
     pub fn is_connected(&self) -> bool {
-        matches!(self.connection, Connection::Connected(_)) && self.handle.is_some()
+        self.ctx.whatsapp.is_connected()
     }
 
     pub fn conversations(&self) -> Vec<&Conversation> {
@@ -191,44 +223,11 @@ impl WhatsApp {
         };
     }
 
-    fn flush(&mut self) {
-        if self.pending.is_empty() {
-            return;
-        }
-        let pending = std::mem::take(&mut self.pending);
-        let touches_selected = self
-            .selected
-            .as_ref()
-            .is_some_and(|jid| pending.iter().any(|wire| &wire.jid == jid));
-        let messages: Vec<ChatMessage> = pending.iter().map(whatsapp::wire_to_message).collect();
-        if let Err(error) = whatsapp::store_messages(self.ctx.db().conn(), &messages) {
-            tracing::warn!(%error, "falha ao gravar mensagens do WhatsApp");
-        }
-        self.reload_list();
-        if touches_selected {
-            self.reload_messages();
-        }
-    }
-
     fn store(&mut self, wire: &WireMessage) {
         let message = whatsapp::wire_to_message(wire);
         if let Err(error) = whatsapp::store_message(self.ctx.db().conn(), &message) {
             tracing::warn!(%error, "falha ao gravar mensagem do WhatsApp");
         }
-    }
-
-    fn request_chat_info(&self) -> Task<Message> {
-        let Some(handle) = self.handle.clone() else {
-            return Task::none();
-        };
-        let jids = whatsapp::known_jids(self.ctx.db().conn()).unwrap_or_default();
-        if jids.is_empty() {
-            return Task::none();
-        }
-        Task::perform(
-            async move { handle.chat_info(jids).await },
-            Message::ChatInfoLoaded,
-        )
     }
 
     fn request_media(&mut self, id: String) -> Task<Message> {
@@ -250,7 +249,7 @@ impl WhatsApp {
         else {
             return Task::none();
         };
-        let Some(handle) = self.handle.clone().filter(|_| self.is_connected()) else {
+        let Some(handle) = self.ctx.whatsapp.get().filter(|_| self.is_connected()) else {
             self.media.insert(
                 id,
                 Media::Failed("Conecte o WhatsApp para baixar a imagem.".to_string()),
@@ -265,65 +264,6 @@ impl WhatsApp {
             },
             |(id, result)| Message::MediaLoaded(id, result),
         )
-    }
-
-    fn set_handle(&mut self, handle: Option<BridgeHandle>) {
-        self.ctx.whatsapp.set(handle.clone());
-        self.handle = handle;
-    }
-
-    fn on_bridge(&mut self, event: BridgeEvent) -> Task<Message> {
-        match event {
-            BridgeEvent::Ready(handle) => {
-                handle.send(Request::Login);
-                self.set_handle(Some(handle));
-                self.connection = Connection::WaitingQr;
-            }
-            BridgeEvent::Qr(code) => match qr_code::Data::new(code) {
-                Ok(data) => self.connection = Connection::Qr(data),
-                Err(error) => self.error = Some(error.to_string()),
-            },
-            BridgeEvent::Connected(jid) => {
-                self.connection = Connection::Connected(jid);
-                if let Some(handle) = self.handle.clone() {
-                    return Task::perform(
-                        async move { handle.conversations().await },
-                        Message::ConversationsLoaded,
-                    );
-                }
-            }
-            BridgeEvent::Message(wire) => self.pending.push(wire),
-            BridgeEvent::Disconnected(reason) => {
-                self.connection = if reason == SESSION_ENDED {
-                    Connection::WaitingQr
-                } else {
-                    Connection::Offline(format!("Conexão perdida ({reason})"))
-                };
-                if reason == SESSION_ENDED
-                    && let Some(handle) = &self.handle
-                {
-                    handle.send(Request::Login);
-                }
-            }
-            BridgeEvent::Archived(jid, archived) => {
-                if let Err(error) = whatsapp::set_archived(self.ctx.db().conn(), &jid, archived) {
-                    tracing::warn!(%error, "falha ao marcar conversa arquivada");
-                }
-                self.reload();
-            }
-            BridgeEvent::Error(error) => self.error = Some(error),
-            BridgeEvent::Exited(reason) => {
-                self.set_handle(None);
-                self.connection = Connection::Offline(reason);
-            }
-        }
-        Task::none()
-    }
-}
-
-impl Drop for WhatsApp {
-    fn drop(&mut self) {
-        self.ctx.whatsapp.set(None);
     }
 }
 
@@ -341,13 +281,6 @@ fn listen(
     }
 }
 
-fn spawn_bridge(
-    key: &(PathBuf, u32),
-) -> impl hub_ui_kit::iced::futures::Stream<Item = BridgeEvent> + use<> {
-    let dir = key.0.clone();
-    bridge::spawn(whatsapp::sidecar_command(&dir), dir)
-}
-
 impl Section for WhatsApp {
     type Message = Message;
 
@@ -356,20 +289,38 @@ impl Section for WhatsApp {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        if !matches!(message, Message::ConversationMenu(_) | Message::Bridge(_)) {
+        if !matches!(message, Message::ConversationMenu(_) | Message::Refresh) {
             self.menu = None;
         }
         match message {
             Message::ConversationMenu(jid) => {
-                self.menu = Some(ContextMenu::at_cursor(
-                    vec![
-                        MenuItem::new("Abrir conversa", Message::Selected(jid.clone()))
-                            .icon(Icon::WhatsApp),
-                        MenuItem::new("Definir apelido", Message::RenameConversation(jid))
-                            .icon(Icon::Edit),
-                    ],
-                    Message::MenuClosed,
-                ));
+                let mut items = vec![
+                    MenuItem::new("Abrir conversa", Message::Selected(jid.clone()))
+                        .icon(Icon::WhatsApp),
+                    MenuItem::new("Definir apelido", Message::RenameConversation(jid.clone()))
+                        .icon(Icon::Edit),
+                ];
+                if whatsapp::is_group_jid(&jid) {
+                    let notify = self.conversations.iter().any(|c| c.jid == jid && c.notify);
+                    let label = if notify {
+                        "Parar de notificar este grupo"
+                    } else {
+                        "Notificar mensagens deste grupo"
+                    };
+                    items.push(MenuItem::new(label, Message::ToggleNotify(jid)).icon(Icon::Bell));
+                }
+                self.menu = Some(ContextMenu::at_cursor(items, Message::MenuClosed));
+            }
+            Message::ToggleNotify(jid) => {
+                let notify = !self.conversations.iter().any(|c| c.jid == jid && c.notify);
+                if let Err(error) = whatsapp::set_notify(self.ctx.db().conn(), &jid, notify) {
+                    self.error = Some(error.to_string());
+                }
+                self.reload_list();
+            }
+            Message::SwitchOff => {
+                self.ctx.whatsapp.stop(&self.ctx);
+                self.sync_status();
             }
             Message::RenameConversation(jid) => {
                 self.selected = Some(jid);
@@ -377,39 +328,7 @@ impl Section for WhatsApp {
                 self.alias = self.selected().map(|c| c.alias.clone().unwrap_or_default());
             }
             Message::MenuClosed => {}
-            Message::Bridge(event) => return self.on_bridge(event),
-            Message::ConversationsLoaded(result) => match result {
-                Ok(list) => {
-                    {
-                        let db = self.ctx.db();
-                        for conversation in &list {
-                            let _ = whatsapp::upsert_conversation(db.conn(), conversation);
-                        }
-                    }
-                    self.reload();
-                    return self.request_chat_info();
-                }
-                Err(error) => self.error = Some(error),
-            },
-            Message::ChatInfoLoaded(result) => match result {
-                Ok(infos) => {
-                    if let Err(error) = whatsapp::apply_chat_info(self.ctx.db().conn(), &infos) {
-                        self.error = Some(error.to_string());
-                    }
-                    if let Some(jid) = &self.selected
-                        && let Some(phone) = infos
-                            .iter()
-                            .find(|i| &i.jid == jid && !i.phone.is_empty())
-                            .map(|i| i.phone.clone())
-                    {
-                        self.selected = Some(phone);
-                    }
-                    self.reload();
-                }
-                Err(error) => tracing::warn!(%error, "falha ao consultar conversas do WhatsApp"),
-            },
             Message::ArchivedToggled => self.show_archived = !self.show_archived,
-            Message::Flush => self.flush(),
             Message::MediaRequested(id) => return self.request_media(id),
             Message::MediaLoaded(id, result) => {
                 let state = match result {
@@ -430,7 +349,8 @@ impl Section for WhatsApp {
             Message::DraftChanged(draft) => self.draft = draft,
             Message::Send => {
                 let text = self.draft.trim().to_string();
-                let (Some(jid), Some(handle)) = (self.selected.clone(), self.handle.clone()) else {
+                let (Some(jid), Some(handle)) = (self.selected.clone(), self.ctx.whatsapp.get())
+                else {
                     return Task::none();
                 };
                 if text.is_empty() || self.sending || !self.is_connected() {
@@ -471,11 +391,14 @@ impl Section for WhatsApp {
             }
             Message::AliasCancelled => self.alias = None,
             Message::Retry => {
-                self.generation += 1;
-                self.connection = Connection::Starting;
                 self.error = None;
+                self.ctx.whatsapp.restart(&self.ctx);
+                self.sync_status();
             }
-            Message::Refresh => self.reload(),
+            Message::Refresh => {
+                self.sync_status();
+                self.reload();
+            }
             Message::ErrorDismissed => self.error = None,
         }
         Task::none()
@@ -490,23 +413,7 @@ impl Section for WhatsApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![
-            Subscription::run_with(
-                (self.ctx.paths.data_dir.clone(), self.generation),
-                spawn_bridge,
-            )
-            .map(Message::Bridge),
-            event::listen_with(listen),
-        ];
-        if !self.pending.is_empty() {
-            subscriptions.push(time::every(FLUSH_INTERVAL).map(|_| Message::Flush));
-        }
-        Subscription::batch(subscriptions)
-    }
-
-    fn on_hide(&mut self) {
-        self.flush();
-        self.set_handle(None);
+        event::listen_with(listen)
     }
 }
 

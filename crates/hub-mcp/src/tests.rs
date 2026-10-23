@@ -5,6 +5,7 @@ use hub_core::chrono::NaiveDateTime;
 use hub_core::clock::FakeClock;
 use hub_core::confirm::ConfirmRequest;
 use hub_core::events::HubEvent;
+use hub_core::notes;
 use hub_core::platform::{FakePlatform, Os, PlatformCall};
 use hub_core::player::PlayerCommand;
 use hub_core::scripts::{self, NewScript};
@@ -165,6 +166,11 @@ async fn lists_all_tools() {
         "agenda_mover",
         "agenda_excluir",
         "agenda_reabrir",
+        "notas_listar",
+        "notas_criar",
+        "notas_editar",
+        "notas_favoritar",
+        "notas_apagar",
         "rotinas_listar",
         "rotinas_editar",
         "rotinas_ativar",
@@ -839,6 +845,8 @@ async fn shortcuts_can_be_edited_opened_and_deleted() {
         fixture.platform.calls(),
         vec![PlatformCall::OpenUrl("https://github.com".into())]
     );
+    let counted = hub_core::shortcuts::usage(fixture.ctx.db().conn()).unwrap();
+    assert_eq!(counted["url|github.com"].0, 1);
     let command = call(&client, "atalhos_abrir", json!({ "indice": 1 })).await;
     assert!(is_error(&command));
     assert_eq!(seen.lock().unwrap().len(), 1);
@@ -1140,5 +1148,108 @@ async fn refused_terminal_command_does_not_run() {
     assert!(result_text(&result).contains("recusou"));
     assert!(!marker.exists());
     assert_eq!(seen.lock().unwrap().len(), 1);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notes_can_be_created_listed_edited_and_favorited() {
+    let fixture = fixture();
+    let mut events = fixture.ctx.events.subscribe();
+    let client = client(&fixture.server, &fixture.server.token).await;
+    let empty = call(&client, "notas_criar", json!({})).await;
+    assert!(is_error(&empty));
+    let created = json_of(
+        &call(
+            &client,
+            "notas_criar",
+            json!({ "titulo": "Compras", "corpo": "leite e pão" }),
+        )
+        .await,
+    );
+    let id = created["criada"].as_i64().unwrap();
+    assert_eq!(events.try_recv().unwrap(), HubEvent::NotesChanged);
+    call(&client, "notas_criar", json!({ "corpo": "ideia solta" })).await;
+    let all = json_of(&call(&client, "notas_listar", json!({})).await);
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let found = json_of(&call(&client, "notas_listar", json!({ "busca": "LEITE" })).await);
+    assert_eq!(found.as_array().unwrap().len(), 1);
+    assert_eq!(found[0]["titulo"], "Compras");
+    let edited = call(
+        &client,
+        "notas_editar",
+        json!({ "id": id, "corpo": "leite, pão e ovos" }),
+    )
+    .await;
+    assert!(!is_error(&edited), "{}", result_text(&edited));
+    let stored = notes::get(fixture.ctx.db().conn(), id).unwrap().unwrap();
+    assert_eq!(stored.title, "Compras");
+    assert_eq!(stored.body, "leite, pão e ovos");
+    let missing = call(&client, "notas_editar", json!({ "id": 999, "titulo": "x" })).await;
+    assert!(is_error(&missing));
+    let favorited = call(&client, "notas_favoritar", json!({ "id": id })).await;
+    assert!(!is_error(&favorited), "{}", result_text(&favorited));
+    assert!(
+        notes::get(fixture.ctx.db().conn(), id)
+            .unwrap()
+            .unwrap()
+            .favorite
+    );
+    call(
+        &client,
+        "notas_favoritar",
+        json!({ "id": id, "favorita": false }),
+    )
+    .await;
+    assert!(
+        !notes::get(fixture.ctx.db().conn(), id)
+            .unwrap()
+            .unwrap()
+            .favorite
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_note_requires_confirmation() {
+    let fixture = fixture();
+    let note = notes::create(
+        fixture.ctx.db().conn(),
+        "Apagar",
+        "corpo",
+        fixture.ctx.clock.now(),
+    )
+    .unwrap();
+    let client = client(&fixture.server, &fixture.server.token).await;
+    let log = auto_answer(&fixture.ctx, false);
+    let refused = call(&client, "notas_apagar", json!({ "id": note.id })).await;
+    assert!(is_error(&refused));
+    assert!(
+        notes::get(fixture.ctx.db().conn(), note.id)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(log.lock().unwrap().len(), 1);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approved_confirmation_deletes_note() {
+    let fixture = fixture();
+    let note = notes::create(
+        fixture.ctx.db().conn(),
+        "Apagar",
+        "corpo",
+        fixture.ctx.clock.now(),
+    )
+    .unwrap();
+    let client = client(&fixture.server, &fixture.server.token).await;
+    auto_answer(&fixture.ctx, true);
+    let result = call(&client, "notas_apagar", json!({ "id": note.id })).await;
+    assert!(!is_error(&result), "{}", result_text(&result));
+    assert!(
+        notes::get(fixture.ctx.db().conn(), note.id)
+            .unwrap()
+            .is_none()
+    );
     client.cancel().await.unwrap();
 }

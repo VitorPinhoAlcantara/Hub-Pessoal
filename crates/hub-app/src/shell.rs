@@ -1,4 +1,4 @@
-use hub_core::config::Renderer;
+use hub_core::config::{BrowserLogin, Renderer};
 use hub_core::confirm::ConfirmRequest;
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
@@ -9,7 +9,7 @@ use iced::widget::{
 use iced::window::Direction;
 use iced::{Alignment, Element, Length, Padding, mouse};
 
-use crate::app::{App, Message, Tab};
+use crate::app::{App, Message, SettingsTab, Tab};
 
 const EDGE: f32 = 5.0;
 
@@ -19,7 +19,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(style::base);
-    let mut layers = stack![window];
+    let mut layers = match &app.wallpaper {
+        Some(frame) => stack![
+            iced::widget::image(frame.handle.clone())
+                .content_fit(iced::ContentFit::Cover)
+                .width(Length::Fill)
+                .height(Length::Fill),
+            window
+        ],
+        None => stack![window],
+    };
     if let Some(menu) = active_menu(app) {
         layers = layers.push(menu::view(&menu));
     }
@@ -57,6 +66,12 @@ fn active_menu(app: &App) -> Option<ContextMenu<Message>> {
             .as_ref()
             .and_then(|s| s.context_menu())
             .map(|m| m.map(Message::Shortcuts)),
+        Tab::Notes => app
+            .notes
+            .as_ref()
+            .and_then(|s| s.context_menu())
+            .map(|m| m.map(Message::Notes)),
+        Tab::Home => None,
         Tab::WhatsApp => app
             .whatsapp
             .as_ref()
@@ -69,7 +84,7 @@ fn active_menu(app: &App) -> Option<ContextMenu<Message>> {
 fn confirmation(request: &ConfirmRequest, pending: usize) -> Element<'_, Message> {
     let mut content = column![
         row![
-            icon(Icon::Ai, ICON_SIZE, ACCENT),
+            icon(Icon::Ai, ICON_SIZE, accent()),
             heading(request.title.as_str())
         ]
         .spacing(units(2))
@@ -104,7 +119,7 @@ fn confirmation(request: &ConfirmRequest, pending: usize) -> Element<'_, Message
 
 fn toolbar(app: &App) -> Element<'_, Message> {
     let toggle = |glyph: Icon, label: &'static str, active: bool, message: Message| {
-        let color = if active { ACCENT } else { TEXT_SECONDARY };
+        let color = if active { accent() } else { text_secondary() };
         with_tooltip(
             icon_button(glyph, color, Some(message)).style(style::toggle(active)),
             label,
@@ -113,7 +128,7 @@ fn toolbar(app: &App) -> Element<'_, Message> {
     };
     let window_button = |glyph: Icon, message: Message| {
         button(
-            container(icon(glyph, ICON_SIZE - 4.0, TEXT_SECONDARY))
+            container(icon(glyph, ICON_SIZE - 4.0, text_secondary()))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
         )
@@ -128,7 +143,7 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         Icon::Maximize
     };
     let menu_button = |label: &'static str, message: Message| {
-        button(text(label).size(FONT_SIZE).color(TEXT_SECONDARY))
+        button(text(label).size(FONT_SIZE).color(text_secondary()))
             .padding([units(1), units(2) + 2.0])
             .style(style::ghost)
             .on_press(message)
@@ -138,6 +153,7 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         body("hub").size(FONT_SIZE_HEADING),
         space().width(units(6)),
         menu_button("Aparência", Message::AppearanceMenu),
+        menu_button("Ferramentas", Message::ToolsMenu),
         space().width(Length::Fill),
         row![
             toggle(
@@ -169,6 +185,8 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             Tab::Agenda => Icon::Agenda,
             Tab::Scripts => Icon::Scripts,
             Tab::Shortcuts => Icon::Shortcuts,
+            Tab::Notes => Icon::Notes,
+            Tab::Home => Icon::Home,
             Tab::WhatsApp => Icon::WhatsApp,
             Tab::Settings => Icon::Settings,
         };
@@ -207,11 +225,47 @@ fn main_area(app: &App) -> Element<'_, Message> {
             Some(shortcuts) => shortcuts.view().map(Message::Shortcuts),
             None => panel(muted("Carregando")).into(),
         },
+        Tab::Notes => match &app.notes {
+            Some(notes) => notes.view().map(Message::Notes),
+            None => panel(muted("Carregando")).into(),
+        },
+        Tab::Home => match &app.home {
+            Some(home) => home.view().map(Message::Home),
+            None => panel(muted("Carregando")).into(),
+        },
         Tab::WhatsApp => match &app.whatsapp {
             Some(whatsapp) => whatsapp.view().map(Message::WhatsApp),
             None => panel(muted("Carregando")).into(),
         },
         Tab::Settings => settings(app),
+    };
+    let content: Element<'_, Message> = match (&app.terminal, app.terminal_open) {
+        (Some(terminal), true) => {
+            let handle = mouse_area(
+                container(container(space()).width(units(10)).height(2).style(
+                    if app.resizing_terminal {
+                        style::indicator
+                    } else {
+                        style::grip
+                    },
+                ))
+                .width(Length::Fill)
+                .height(GAP_PANEL)
+                .center_x(Length::Fill)
+                .center_y(GAP_PANEL),
+            )
+            .on_press(Message::TerminalResizeStart)
+            .interaction(mouse::Interaction::ResizingVertically);
+            column![
+                container(content).height(Length::Fill),
+                handle,
+                container(terminal.view().map(Message::Terminal))
+                    .width(Length::Fill)
+                    .height(app.terminal_height),
+            ]
+            .into()
+        }
+        _ => content,
     };
     let mut panels = row![content].height(Length::Fill);
     if app.ai_open
@@ -271,6 +325,37 @@ fn status(active: bool) -> String {
 }
 
 fn settings(app: &App) -> Element<'_, Message> {
+    let tabs = row![
+        tab_button(
+            Icon::Settings,
+            "Personalização",
+            app.settings_tab == SettingsTab::Personalization,
+            Message::SettingsTab(SettingsTab::Personalization),
+        ),
+        tab_button(
+            Icon::Settings,
+            "Geral",
+            app.settings_tab == SettingsTab::General,
+            Message::SettingsTab(SettingsTab::General),
+        ),
+    ]
+    .spacing(units(2));
+    let content = match app.settings_tab {
+        SettingsTab::Personalization => app.personalization.view(&app.ctx, app.zoom),
+        SettingsTab::General => general_settings(app),
+    };
+    panel(
+        column![
+            title("Configurações"),
+            column![tabs, divider()].spacing(units(2)),
+            scroll(content)
+        ]
+        .spacing(units(3)),
+    )
+    .into()
+}
+
+fn general_settings(app: &App) -> Element<'_, Message> {
     let config = app.ctx.config();
     let renderer = match config.general.renderer {
         Renderer::Gpu => "GPU (wgpu)",
@@ -283,24 +368,41 @@ fn settings(app: &App) -> Element<'_, Message> {
         Ok(server) => server.url(),
         Err(error) => format!("Desligado: {error}"),
     };
-    panel(
-        column![
-            title("Configurações"),
-            muted("As opções ficam em config.toml e são recarregadas sozinhas quando o arquivo muda. O renderizador vale na próxima abertura."),
-            space().height(units(2)),
-            line("Renderizador", renderer.to_string()),
-            line(
-                "Iniciar com o sistema",
-                if config.general.start_with_system { "Sim" } else { "Não" }.to_string()
-            ),
-            line("Servidor MCP", mcp),
-            line("Configuração", app.ctx.paths.config_file().display().to_string()),
-            line("Dados", app.ctx.paths.data_dir.display().to_string()),
-            line("Bandeja", status(app.tray_available)),
-            line("Recarga automática", status(app.watcher.is_some())),
-        ]
-        .spacing(units(2)),
-    )
+    column![
+        heading("Sobre"),
+        line(
+            "Versão",
+            format!("{} {}", hub_core::channel::app_name(), hub_core::channel::VERSION)
+        ),
+        line("Servidor MCP", mcp),
+        line("Bandeja", status(app.tray_available)),
+        line("Recarga automática", status(app.watcher.is_some())),
+        space().height(units(2)),
+        heading("Sistema"),
+        muted("Estas opções ficam em config.toml e são recarregadas sozinhas quando o arquivo muda. O renderizador vale na próxima abertura."),
+        line("Renderizador", renderer.to_string()),
+        line(
+            "Iniciar com o sistema",
+            if config.general.start_with_system { "Sim" } else { "Não" }.to_string()
+        ),
+        line("Configuração", app.ctx.paths.config_file().display().to_string()),
+        line("Dados", app.ctx.paths.data_dir.display().to_string()),
+        space().height(units(4)),
+        heading("Player"),
+        muted("Para abrir playlists privadas do YouTube, o yt-dlp usa o login do navegador escolhido só para listar as faixas, lendo os cookies neste computador; as músicas tocam sem login. Zen e Firefox funcionam com o navegador aberto; Chrome, Edge e Brave podem não funcionar no Windows por causa da criptografia dos cookies."),
+        BrowserLogin::ALL
+            .iter()
+            .fold(row![].spacing(units(2)), |row, browser| {
+                row.push(choice(
+                    browser.label(),
+                    config.player.browser_login == *browser,
+                    Message::BrowserLogin(*browser),
+                ))
+            }),
+        space().height(units(4)),
+        app.maintenance.view().map(Message::Maintenance),
+    ]
+    .spacing(units(2))
     .into()
 }
 

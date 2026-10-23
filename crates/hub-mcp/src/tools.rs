@@ -5,6 +5,7 @@ use hub_core::agenda::{self, NewRoutine, NewTask, Priority, Reminder, Routine, q
 use hub_core::chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 use hub_core::confirm::CONFIRM_TIMEOUT;
 use hub_core::events::HubEvent;
+use hub_core::notes;
 use hub_core::per_os::PerOs;
 use hub_core::platform::Os;
 use hub_core::platform::terminal;
@@ -157,6 +158,38 @@ pub struct WhatsAppSendRequest {
     pub conversa: String,
     #[schemars(description = "Texto da mensagem")]
     pub texto: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NotesListRequest {
+    #[schemars(description = "Texto a procurar no título ou no corpo. Vazio lista todas")]
+    pub busca: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteCreateRequest {
+    #[schemars(description = "Título da nota")]
+    pub titulo: Option<String>,
+    #[schemars(description = "Texto da nota")]
+    pub corpo: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteEditRequest {
+    #[schemars(description = "Id da nota (veja notas_listar)")]
+    pub id: i64,
+    #[schemars(description = "Novo título")]
+    pub titulo: Option<String>,
+    #[schemars(description = "Novo texto; texto vazio limpa o corpo")]
+    pub corpo: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteFavoriteRequest {
+    #[schemars(description = "Id da nota (veja notas_listar)")]
+    pub id: i64,
+    #[schemars(description = "true marca como favorita (padrão), false desmarca")]
+    pub favorita: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -436,6 +469,18 @@ fn kind_name(kind: ShortcutKind) -> &'static str {
     }
 }
 
+fn note_json(note: &notes::Note) -> serde_json::Value {
+    json!({
+        "id": note.id,
+        "titulo": note.display_title(),
+        "corpo": note.body,
+        "favorita": note.favorite,
+        "temporaria": note.reset.label(),
+        "criada_em": note.created_at.format("%Y-%m-%d %H:%M").to_string(),
+        "atualizada_em": note.updated_at.format("%Y-%m-%d %H:%M").to_string(),
+    })
+}
+
 fn reminder_json(reminder: &Reminder) -> serde_json::Value {
     json!({
         "id": reminder.id,
@@ -515,6 +560,10 @@ impl HubTools {
             .confirmations
             .confirm(&self.ctx.events, title, detail, self.confirm_timeout)
             .await
+    }
+
+    fn notes_changed(&self) {
+        self.ctx.events.publish(HubEvent::NotesChanged);
     }
 
     fn agenda_changed(&self) {
@@ -1229,6 +1278,107 @@ impl HubTools {
         Ok(format!("Tarefa {} reaberta", request.id))
     }
 
+    #[tool(
+        description = "Lista as notas do usuário (favoritas primeiro), com busca opcional no título e no corpo"
+    )]
+    async fn notas_listar(
+        &self,
+        Parameters(request): Parameters<NotesListRequest>,
+    ) -> Result<String, String> {
+        let db = self.ctx.db();
+        let found = match filled(request.busca) {
+            Some(query) => notes::search(db.conn(), &query),
+            None => notes::list(db.conn()),
+        }
+        .map_err(err)?;
+        let list: Vec<serde_json::Value> = found.iter().map(note_json).collect();
+        Ok(text(&list))
+    }
+
+    #[tool(description = "Cria uma nota com título e texto opcionais")]
+    async fn notas_criar(
+        &self,
+        Parameters(request): Parameters<NoteCreateRequest>,
+    ) -> Result<String, String> {
+        let title = request.titulo.unwrap_or_default();
+        let body = request.corpo.unwrap_or_default();
+        if title.trim().is_empty() && body.trim().is_empty() {
+            return Err("informe o título ou o corpo da nota".to_string());
+        }
+        let now = self.ctx.clock.now();
+        let note = notes::create(self.ctx.db().conn(), title.trim(), &body, now).map_err(err)?;
+        self.notes_changed();
+        Ok(text(
+            &json!({ "criada": note.id, "titulo": note.display_title() }),
+        ))
+    }
+
+    #[tool(description = "Edita o título e o texto de uma nota; só muda o que for informado")]
+    async fn notas_editar(
+        &self,
+        Parameters(request): Parameters<NoteEditRequest>,
+    ) -> Result<String, String> {
+        let now = self.ctx.clock.now();
+        let title = {
+            let db = self.ctx.db();
+            let note = notes::get(db.conn(), request.id)
+                .map_err(err)?
+                .ok_or_else(|| format!("nota {} não encontrada", request.id))?;
+            let title = request
+                .titulo
+                .map(|t| t.trim().to_string())
+                .unwrap_or(note.title);
+            let body = request.corpo.unwrap_or(note.body);
+            notes::update(db.conn(), request.id, &title, &body, now).map_err(err)?;
+            title
+        };
+        self.notes_changed();
+        Ok(format!("Nota {} atualizada ({title})", request.id))
+    }
+
+    #[tool(description = "Marca ou desmarca uma nota como favorita")]
+    async fn notas_favoritar(
+        &self,
+        Parameters(request): Parameters<NoteFavoriteRequest>,
+    ) -> Result<String, String> {
+        let favorite = request.favorita.unwrap_or(true);
+        {
+            let db = self.ctx.db();
+            notes::get(db.conn(), request.id)
+                .map_err(err)?
+                .ok_or_else(|| format!("nota {} não encontrada", request.id))?;
+            notes::set_favorite(db.conn(), request.id, favorite).map_err(err)?;
+        }
+        self.notes_changed();
+        Ok(if favorite {
+            format!("Nota {} marcada como favorita", request.id)
+        } else {
+            format!("Nota {} desmarcada como favorita", request.id)
+        })
+    }
+
+    #[tool(description = "Apaga uma nota. Pede confirmação ao usuário no hub")]
+    async fn notas_apagar(
+        &self,
+        Parameters(request): Parameters<IdRequest>,
+    ) -> Result<String, String> {
+        let note = notes::get(self.ctx.db().conn(), request.id)
+            .map_err(err)?
+            .ok_or_else(|| format!("nota {} não encontrada", request.id))?;
+        let approved = self
+            .confirm(
+                format!("Apagar a nota {}?", note.display_title()),
+                "A IA pediu para apagar esta nota. A ação não pode ser desfeita".to_string(),
+            )
+            .await;
+        if !approved {
+            return Err(REFUSED.to_string());
+        }
+        notes::delete(self.ctx.db().conn(), request.id).map_err(err)?;
+        self.notes_changed();
+        Ok(format!("Nota {} apagada", request.id))
+    }
+
     #[tool(description = "Lista as rotinas com recorrência, hora, notas e se estão ativas")]
     async fn rotinas_listar(&self) -> Result<String, String> {
         let routines = agenda::list_routines(self.ctx.db().conn()).map_err(err)?;
@@ -1669,6 +1819,11 @@ impl HubTools {
             }
         }
         shortcuts::open(self.ctx.platform.as_ref(), &shortcut).map_err(err)?;
+        let key = shortcuts::usage_key(&shortcut, self.ctx.platform.os());
+        let recorded = shortcuts::record_use(self.ctx.db().conn(), &key, self.ctx.clock.now());
+        if recorded.is_ok() {
+            self.ctx.events.publish(HubEvent::ShortcutsChanged);
+        }
         Ok(format!("Atalho {} aberto", shortcut.name))
     }
 
@@ -1868,7 +2023,7 @@ impl HubTools {
 impl ServerHandler for HubTools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Ferramentas do hub pessoal do usuário: agenda (tarefas, rotinas, lembretes), scripts, atalhos, player, WhatsApp e terminal (cada comando pede confirmação ao usuário). Datas no fuso local.",
+            "Ferramentas do hub pessoal do usuário: agenda (tarefas, rotinas, lembretes), notas, scripts, atalhos, player, WhatsApp e terminal (cada comando pede confirmação ao usuário). Datas no fuso local.",
         )
     }
 }

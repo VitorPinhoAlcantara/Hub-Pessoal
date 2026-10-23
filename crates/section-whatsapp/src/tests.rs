@@ -3,11 +3,36 @@ use std::sync::Arc;
 use hub_core::clock::FakeClock;
 use hub_core::platform::FakePlatform;
 use hub_core::whatsapp::WireMessage;
+use hub_core::whatsapp::bridge::BridgeEvent;
+use hub_core::whatsapp::protocol::WireConversation;
+use hub_core::whatsapp::service::Processor;
 use hub_core::{Config, Database, HubContext, HubPaths};
 
 use super::*;
 
-fn section() -> WhatsApp {
+struct Tester {
+    section: WhatsApp,
+    processor: Processor,
+}
+
+enum Step {
+    Bridge(BridgeEvent),
+    Ui(Message),
+}
+
+impl From<Message> for Step {
+    fn from(message: Message) -> Self {
+        Step::Ui(message)
+    }
+}
+
+impl From<BridgeEvent> for Step {
+    fn from(event: BridgeEvent) -> Self {
+        Step::Bridge(event)
+    }
+}
+
+fn section() -> Tester {
     let ctx = HubContext::new(
         HubPaths::from_home("teste"),
         Config::default(),
@@ -15,14 +40,26 @@ fn section() -> WhatsApp {
         Arc::new(FakePlatform::default()),
         Arc::new(FakeClock::at("2026-10-21 10:00")),
     );
-    WhatsApp::new(ctx)
+    let processor = Processor::new(ctx.clone(), ctx.whatsapp.clone());
+    Tester {
+        section: WhatsApp::new(ctx),
+        processor,
+    }
 }
 
-fn send(section: &mut WhatsApp, messages: impl IntoIterator<Item = Message>) {
-    for message in messages {
-        let _ = section.update(message);
+fn send(tester: &mut Tester, steps: impl IntoIterator<Item = Step>) {
+    for step in steps {
+        match step {
+            Step::Bridge(event) => {
+                let _ = tester.processor.handle(event);
+                tester.processor.flush();
+                let _ = tester.section.update(Message::Refresh);
+            }
+            Step::Ui(message) => {
+                let _ = tester.section.update(message);
+            }
+        }
     }
-    let _ = section.update(Message::Flush);
 }
 
 fn incoming(id: &str, jid: &str, text: &str) -> WireMessage {
@@ -42,249 +79,288 @@ fn incoming(id: &str, jid: &str, text: &str) -> WireMessage {
 
 #[test]
 fn starts_disconnected_and_shows_qr() {
-    let mut section = section();
-    assert!(matches!(section.connection(), Connection::Starting));
-    send(
-        &mut section,
-        [Message::Bridge(BridgeEvent::Qr("2@abc".into()))],
-    );
-    assert!(matches!(section.connection(), Connection::Qr(_)));
-    let _ = section.view();
+    let mut tester = section();
+    assert!(matches!(
+        tester.section.connection(),
+        Connection::Offline(_)
+    ));
+    send(&mut tester, [Step::from(BridgeEvent::Qr("2@abc".into()))]);
+    assert!(matches!(tester.section.connection(), Connection::Qr(_)));
+    let _ = tester.section.view();
 }
 
 #[test]
 fn incoming_messages_create_conversations() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Connected("eu@s.whatsapp.net".into())),
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Connected("eu@s.whatsapp.net".into())),
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::Selected("ana@s.whatsapp.net".into()),
+            Step::from(Message::Selected("ana@s.whatsapp.net".into())),
         ],
     );
-    assert_eq!(section.conversations().len(), 1);
-    assert_eq!(section.selected().unwrap().title(), "Ana");
-    assert_eq!(section.messages().len(), 1);
-    let _ = section.view();
+    assert_eq!(tester.section.conversations().len(), 1);
+    assert_eq!(tester.section.selected().unwrap().title(), "Ana");
+    assert_eq!(tester.section.messages().len(), 1);
+    let _ = tester.section.view();
 }
 
 #[test]
 fn conversation_list_is_saved_and_searchable() {
-    let mut section = section();
+    let mut tester = section();
+    {
+        let db = tester.section.ctx.db();
+        for conversation in [
+            WireConversation {
+                jid: "a@s.whatsapp.net".into(),
+                nome: "Ana".into(),
+                grupo: false,
+            },
+            WireConversation {
+                jid: "f@g.us".into(),
+                nome: "Família".into(),
+                grupo: true,
+            },
+        ] {
+            hub_core::whatsapp::upsert_conversation(db.conn(), &conversation).unwrap();
+        }
+    }
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::ConversationsLoaded(Ok(vec![
-                WireConversation {
-                    jid: "a@s.whatsapp.net".into(),
-                    nome: "Ana".into(),
-                    grupo: false,
-                },
-                WireConversation {
-                    jid: "f@g.us".into(),
-                    nome: "Família".into(),
-                    grupo: true,
-                },
-            ])),
-            Message::QueryChanged("fam".into()),
+            Step::from(Message::Refresh),
+            Step::from(Message::QueryChanged("fam".into())),
         ],
     );
-    let found = section.conversations();
+    let found = tester.section.conversations();
     assert_eq!(found.len(), 1);
     assert!(found[0].group);
 }
 
 #[test]
 fn alias_is_saved_and_cancel_keeps_name() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::Selected("ana@s.whatsapp.net".into()),
-            Message::AliasEdit,
-            Message::AliasChanged("Mãe".into()),
-            Message::AliasCancelled,
+            Step::from(Message::Selected("ana@s.whatsapp.net".into())),
+            Step::from(Message::AliasEdit),
+            Step::from(Message::AliasChanged("Mãe".into())),
+            Step::from(Message::AliasCancelled),
         ],
     );
-    assert_eq!(section.selected().unwrap().title(), "Ana");
+    assert_eq!(tester.section.selected().unwrap().title(), "Ana");
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::AliasEdit,
-            Message::AliasChanged("Mãe".into()),
-            Message::AliasSaved,
+            Step::from(Message::AliasEdit),
+            Step::from(Message::AliasChanged("Mãe".into())),
+            Step::from(Message::AliasSaved),
         ],
     );
-    assert_eq!(section.selected().unwrap().title(), "Mãe");
-    assert!(section.alias().is_none());
-    let _ = section.view();
+    assert_eq!(tester.section.selected().unwrap().title(), "Mãe");
+    assert!(tester.section.alias().is_none());
+    let _ = tester.section.view();
 }
 
 #[test]
 fn sending_requires_connection() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::Selected("ana@s.whatsapp.net".into()),
-            Message::DraftChanged("tchau".into()),
-            Message::Send,
+            Step::from(Message::Selected("ana@s.whatsapp.net".into())),
+            Step::from(Message::DraftChanged("tchau".into())),
+            Step::from(Message::Send),
         ],
     );
-    assert!(!section.sending());
+    assert!(!tester.section.sending());
     send(
-        &mut section,
-        [Message::Sent(Ok(WireMessage {
+        &mut tester,
+        [Step::from(Message::Sent(Ok(WireMessage {
             minha: true,
             id: "S1".into(),
             texto: "tchau".into(),
             em: 1_792_627_100,
             ..incoming("S1", "ana@s.whatsapp.net", "tchau")
-        }))],
+        })))],
     );
-    assert_eq!(section.draft(), "");
-    assert!(section.messages().last().unwrap().mine);
+    assert_eq!(tester.section.draft(), "");
+    assert!(tester.section.messages().last().unwrap().mine);
 }
 
 #[test]
-fn exit_and_retry() {
-    let mut section = section();
+fn exit_and_switch_off() {
+    let mut tester = section();
     send(
-        &mut section,
-        [Message::Bridge(BridgeEvent::Exited("sem sidecar".into()))],
+        &mut tester,
+        [Step::from(BridgeEvent::Exited("sem sidecar".into()))],
     );
-    assert!(matches!(section.connection(), Connection::Offline(reason) if reason == "sem sidecar"));
-    let _ = section.view();
-    send(&mut section, [Message::Retry]);
-    assert!(matches!(section.connection(), Connection::Starting));
-    assert_eq!(section.generation, 1);
+    assert!(
+        matches!(tester.section.connection(), Connection::Offline(reason) if reason == "sem sidecar")
+    );
+    let _ = tester.section.view();
+    send(&mut tester, [Step::from(Message::SwitchOff)]);
+    assert!(
+        matches!(tester.section.connection(), Connection::Offline(reason) if reason == SWITCHED_OFF)
+    );
+}
+
+#[test]
+fn groups_notify_only_when_enabled() {
+    let mut tester = section();
+    send(
+        &mut tester,
+        [
+            Step::from(BridgeEvent::Message(incoming("1", "123@g.us", "grupo"))),
+            Step::from(Message::ConversationMenu("123@g.us".into())),
+        ],
+    );
+    assert_eq!(tester.section.context_menu().unwrap().items.len(), 3);
+    assert!(!tester.section.conversations()[0].notify);
+    send(
+        &mut tester,
+        [Step::from(Message::ToggleNotify("123@g.us".into()))],
+    );
+    assert!(tester.section.conversations()[0].notify);
 }
 
 #[test]
 fn logged_out_goes_back_to_pairing() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Connected("eu".into())),
-            Message::Bridge(BridgeEvent::Disconnected(SESSION_ENDED.into())),
+            Step::from(BridgeEvent::Connected("eu".into())),
+            Step::from(BridgeEvent::Disconnected(SESSION_ENDED.into())),
         ],
     );
-    assert!(matches!(section.connection(), Connection::WaitingQr));
+    assert!(matches!(tester.section.connection(), Connection::WaitingQr));
 }
 
 #[test]
 fn right_click_offers_alias_and_missing_sidecar_has_guide() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Connected("eu@s.whatsapp.net".into())),
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Connected("eu@s.whatsapp.net".into())),
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::ConversationMenu("ana@s.whatsapp.net".into()),
+            Step::from(Message::ConversationMenu("ana@s.whatsapp.net".into())),
         ],
     );
-    assert_eq!(section.context_menu().unwrap().items.len(), 2);
+    assert_eq!(tester.section.context_menu().unwrap().items.len(), 2);
     send(
-        &mut section,
-        [Message::RenameConversation("ana@s.whatsapp.net".into())],
+        &mut tester,
+        [Step::from(Message::RenameConversation(
+            "ana@s.whatsapp.net".into(),
+        ))],
     );
-    assert!(section.context_menu().is_none());
-    assert_eq!(section.alias(), Some(""));
+    assert!(tester.section.context_menu().is_none());
+    assert_eq!(tester.section.alias(), Some(""));
     assert_eq!(
-        section.selected().map(|c| c.jid.as_str()),
+        tester.section.selected().map(|c| c.jid.as_str()),
         Some("ana@s.whatsapp.net")
     );
     send(
-        &mut section,
-        [Message::Bridge(BridgeEvent::Exited(
+        &mut tester,
+        [Step::from(BridgeEvent::Exited(
             "Não foi possível iniciar o whatsapp-bridge (arquivo não encontrado)".into(),
         ))],
     );
-    let _ = section.view();
+    let _ = tester.section.view();
 }
 
 #[test]
 fn archived_conversations_are_hidden_until_toggled() {
-    let mut section = section();
+    let mut tester = section();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Message(incoming(
+            Step::from(BridgeEvent::Message(incoming(
                 "1",
                 "ana@s.whatsapp.net",
                 "oi",
             ))),
-            Message::Bridge(BridgeEvent::Message(incoming("2", "123@g.us", "grupo"))),
-            Message::Bridge(BridgeEvent::Archived("123@g.us".into(), true)),
+            Step::from(BridgeEvent::Message(incoming("2", "123@g.us", "grupo"))),
+            Step::from(BridgeEvent::Archived("123@g.us".into(), true)),
         ],
     );
-    assert_eq!(section.conversations().len(), 1);
-    assert_eq!(section.archived_count(), 1);
-    let _ = section.view();
-    send(&mut section, [Message::ArchivedToggled]);
-    assert_eq!(section.conversations()[0].jid, "123@g.us");
-    let _ = section.view();
+    assert_eq!(tester.section.conversations().len(), 1);
+    assert_eq!(tester.section.archived_count(), 1);
+    let _ = tester.section.view();
+    send(&mut tester, [Step::from(Message::ArchivedToggled)]);
+    assert_eq!(tester.section.conversations()[0].jid, "123@g.us");
+    let _ = tester.section.view();
     send(
-        &mut section,
-        [Message::ArchivedToggled, Message::QueryChanged("@".into())],
+        &mut tester,
+        [
+            Step::from(Message::ArchivedToggled),
+            Step::from(Message::QueryChanged("@".into())),
+        ],
     );
-    assert_eq!(section.conversations().len(), 2);
+    assert_eq!(tester.section.conversations().len(), 2);
 }
 
 #[test]
 fn images_download_only_when_requested() {
-    let mut section = section();
+    let mut tester = section();
     let mut image = incoming("I1", "ana@s.whatsapp.net", "");
     image.tipo = "imagem".into();
     image.midia = "Zm9v".into();
     send(
-        &mut section,
+        &mut tester,
         [
-            Message::Bridge(BridgeEvent::Message(image)),
-            Message::Selected("ana@s.whatsapp.net".into()),
+            Step::from(BridgeEvent::Message(image)),
+            Step::from(Message::Selected("ana@s.whatsapp.net".into())),
         ],
     );
-    assert!(section.media("I1").is_none());
-    let _ = section.view();
-    send(&mut section, [Message::MediaRequested("I1".into())]);
-    assert!(matches!(section.media("I1"), Some(Media::Failed(_))));
+    assert!(tester.section.media("I1").is_none());
+    let _ = tester.section.view();
     send(
-        &mut section,
-        [Message::MediaLoaded(
+        &mut tester,
+        [Step::from(Message::MediaRequested("I1".into()))],
+    );
+    assert!(matches!(tester.section.media("I1"), Some(Media::Failed(_))));
+    send(
+        &mut tester,
+        [Step::from(Message::MediaLoaded(
             "I1".into(),
             Ok(std::path::PathBuf::from("foto.jpg")),
-        )],
+        ))],
     );
-    assert!(matches!(section.media("I1"), Some(Media::Ready(..))));
-    let _ = section.view();
+    assert!(matches!(tester.section.media("I1"), Some(Media::Ready(..))));
+    let _ = tester.section.view();
     send(
-        &mut section,
-        [Message::MediaLoaded("I1".into(), Err("expirou".into()))],
+        &mut tester,
+        [Step::from(Message::MediaLoaded(
+            "I1".into(),
+            Err("expirou".into()),
+        ))],
     );
-    assert!(matches!(section.media("I1"), Some(Media::Failed(e)) if e == "expirou"));
+    assert!(matches!(tester.section.media("I1"), Some(Media::Failed(e)) if e == "expirou"));
 }

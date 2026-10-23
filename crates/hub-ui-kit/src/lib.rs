@@ -1,3 +1,4 @@
+pub mod color_picker;
 pub mod cursor;
 pub mod dialog;
 pub mod font;

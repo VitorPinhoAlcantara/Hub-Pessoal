@@ -19,10 +19,10 @@ const PATH_CHARS: usize = 22;
 
 fn kind_icon(kind: ShortcutKind) -> (Icon, Color) {
     match kind {
-        ShortcutKind::Program => (Icon::App, ACCENT),
-        ShortcutKind::Folder => (Icon::Folder, WARNING),
-        ShortcutKind::Url => (Icon::Link, SUCCESS),
-        ShortcutKind::Command => (Icon::Command, KIND_ROUTINE),
+        ShortcutKind::Program => (Icon::App, accent()),
+        ShortcutKind::Folder => (Icon::Folder, warning()),
+        ShortcutKind::Url => (Icon::Link, success()),
+        ShortcutKind::Command => (Icon::Command, kind_routine()),
     }
 }
 
@@ -45,7 +45,7 @@ fn picture<'a>(handle: Option<&Handle>, kind: ShortcutKind, size: f32) -> Elemen
 pub fn view(section: &Shortcuts) -> Element<'_, Message> {
     let search = container(
         row![
-            icon(Icon::Search, ICON_SIZE - 4.0, TEXT_SECONDARY),
+            icon(Icon::Search, ICON_SIZE - 4.0, text_secondary()),
             text_field("Buscar atalho", section.query(), Message::QueryChanged)
                 .style(|theme, status| {
                     let mut style = style::input(theme, status);
@@ -72,14 +72,14 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let mut content = Column::new().spacing(units(3)).push(header);
-    for (problem, color) in [(section.problem(), WARNING), (section.error(), DANGER)] {
+    for (problem, color) in [(section.problem(), warning()), (section.error(), danger())] {
         if let Some(problem) = problem {
             content = content.push(
                 container(
                     row![
                         icon(Icon::Warning, ICON_SIZE - 4.0, color),
                         body(problem).color(color).width(Length::Fill),
-                        icon_button(Icon::Close, TEXT_SECONDARY, Some(Message::ErrorDismissed)),
+                        icon_button(Icon::Close, text_secondary(), Some(Message::ErrorDismissed)),
                     ]
                     .spacing(units(2))
                     .align_y(Alignment::Center),
@@ -94,7 +94,7 @@ pub fn view(section: &Shortcuts) -> Element<'_, Message> {
     let body: Element<'_, Message> = if section.shortcuts().is_empty() {
         container(
             column![
-                icon(Icon::Shortcuts, 32.0, TEXT_SECONDARY),
+                icon(Icon::Shortcuts, 32.0, text_secondary()),
                 muted("Nenhum atalho ainda."),
                 primary_button("Criar atalho", Some(Message::NewShortcut)),
             ]
@@ -170,10 +170,10 @@ fn group_view<'a>(
                     Icon::ChevronDown
                 },
                 ICON_SIZE - 4.0,
-                TEXT_SECONDARY
+                text_secondary()
             ),
             heading(group.clone()),
-            small(items.len().to_string()).color(TEXT_SECONDARY),
+            small(items.len().to_string()).color(text_secondary()),
             space().width(Length::Fill),
         ]
         .spacing(units(2))
@@ -219,16 +219,16 @@ fn tile<'a>(section: &'a Shortcuts, index: usize, shortcut: &'a Shortcut) -> Ele
         text(shortcut.name.as_str())
             .size(FONT_SIZE)
             .color(if available {
-                TEXT_PRIMARY
+                text_primary()
             } else {
-                TEXT_SECONDARY
+                text_secondary()
             })
             .align_x(text::Alignment::Center)
             .width(Length::Fill)
             .height(Length::Fixed(FONT_SIZE * 2.6)),
         text(path)
             .size(FONT_SIZE_SMALL)
-            .color(TEXT_SECONDARY)
+            .color(text_secondary())
             .align_x(text::Alignment::Center)
             .width(Length::Fill)
             .wrapping(text::Wrapping::None),
@@ -275,7 +275,7 @@ fn app_picker(section: &Shortcuts) -> Element<'_, Message> {
             .padding([units(4), 0.0])
             .center_x(Length::Fill)
             .into(),
-        Apps::Failed(error) => container(body(error.as_str()).color(DANGER))
+        Apps::Failed(error) => container(body(error.as_str()).color(danger()))
             .padding([units(4), 0.0])
             .center_x(Length::Fill)
             .into(),
@@ -310,7 +310,7 @@ fn app_picker(section: &Shortcuts) -> Element<'_, Message> {
                         });
                 if full {
                     rows = rows.push(
-                        container(small("Digite para refinar a busca").color(TEXT_SECONDARY))
+                        container(small("Digite para refinar a busca").color(text_secondary()))
                             .padding([units(1), units(2)]),
                     );
                 }
@@ -406,7 +406,7 @@ fn form_view<'a>(section: &'a Shortcuts, form: &'a ShortcutForm) -> Element<'a, 
             row![
                 icon_label_button(Icon::File, "Escolher arquivo", Some(Message::PickFile)),
                 icon_label_button(Icon::Folder, "Escolher pasta", Some(Message::PickFolder)),
-                small(format!("Preenche o alvo no {system}")).color(TEXT_SECONDARY),
+                small(format!("Preenche o alvo no {system}")).color(text_secondary()),
             ]
             .spacing(units(2))
             .align_y(Alignment::Center),
@@ -424,7 +424,7 @@ fn form_view<'a>(section: &'a Shortcuts, form: &'a ShortcutForm) -> Element<'a, 
         .spacing(units(2)),
     ));
     if let Some(error) = section.form_error() {
-        col = col.push(body(error).color(DANGER));
+        col = col.push(body(error).color(danger()));
     }
     col = col.push(
         row![
