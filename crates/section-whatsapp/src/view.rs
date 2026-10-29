@@ -55,14 +55,22 @@ fn status_line(section: &WhatsApp) -> Element<'_, Message> {
     }
 }
 
-fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Element<'a, Message> {
+fn conversation_item<'a>(
+    conversation: &'a Conversation,
+    selected: bool,
+    target: bool,
+) -> Element<'a, Message> {
     let avatar_icon = if conversation.group {
         Icon::Users
     } else {
         Icon::User
     };
     let time = conversation.last_at.map(short_time).unwrap_or_default();
-    let item = button(
+    let mut meta = row![].spacing(units(1)).align_y(Alignment::Center);
+    if conversation.pinned {
+        meta = meta.push(icon(Icon::Flag, ICON_SIZE - 6.0, text_secondary()));
+    }
+    let content = mouse_area(
         row![
             container(icon(avatar_icon, ICON_SIZE - 2.0, WHATSAPP_GREEN))
                 .padding(units(2))
@@ -76,7 +84,7 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
                     )
                     .clip(true)
                     .width(Length::Fill),
-                    small(time),
+                    meta.push(small(time)),
                 ]
                 .spacing(units(2)),
                 container(
@@ -94,12 +102,16 @@ fn conversation_item<'a>(conversation: &'a Conversation, selected: bool) -> Elem
         .spacing(units(3))
         .align_y(Alignment::Center),
     )
-    .padding([units(2), units(3)])
-    .width(Length::Fill)
-    .style(style::selectable(selected))
-    .on_press(Message::Selected(conversation.jid.clone()));
+    .on_press(Message::ConversationPressed(conversation.jid.clone()));
+    let item = button(content)
+        .padding([units(2), units(3)])
+        .width(Length::Fill)
+        .style(style::selectable(selected || target))
+        .on_press(Message::Selected(conversation.jid.clone()));
     mouse_area(item)
         .on_right_press(Message::ConversationMenu(conversation.jid.clone()))
+        .on_enter(Message::ConversationHovered(conversation.jid.clone()))
+        .on_exit(Message::ConversationLeft(conversation.jid.clone()))
         .into()
 }
 
@@ -122,6 +134,7 @@ fn list(section: &WhatsApp) -> Element<'_, Message> {
                 col.push(conversation_item(
                     c,
                     selected.as_deref() == Some(c.jid.as_str()),
+                    section.drop_target(&c.jid),
                 ))
             },
         );
@@ -347,7 +360,13 @@ fn chat(section: &WhatsApp) -> Element<'_, Message> {
     let can_send = section.is_connected() && !section.sending();
     let composer: Element<'_, Message> = if section.is_connected() {
         row![
-            text_field("Mensagem", section.draft(), Message::DraftChanged).on_submit(Message::Send),
+            button(icon(Icon::File, ICON_SIZE - 2.0, text_secondary()))
+                .padding(units(2))
+                .style(style::ghost)
+                .on_press_maybe(can_send.then_some(Message::AttachFiles)),
+            text_field("Mensagem", section.draft(), Message::DraftChanged)
+                .id(crate::DRAFT_INPUT)
+                .on_submit(Message::Send),
             button(icon(Icon::Send, ICON_SIZE - 2.0, on_accent()))
                 .padding(units(2))
                 .style(style::primary)
@@ -361,7 +380,34 @@ fn chat(section: &WhatsApp) -> Element<'_, Message> {
     } else {
         small("Conecte o WhatsApp para responder.").into()
     };
-    column![header, messages, composer]
+    let suggestions = section.mention_suggestions();
+    let mut bottom = Column::new().spacing(units(1));
+    if !suggestions.is_empty() {
+        bottom = bottom.push(
+            container(suggestions.into_iter().fold(
+                Column::new().spacing(2),
+                |col, (name, jid)| {
+                    let label = if jid.is_none() {
+                        format!("@{name} (marca todo mundo)")
+                    } else {
+                        format!("@{name}")
+                    };
+                    col.push(
+                        button(text(label).size(FONT_SIZE))
+                            .padding([units(1), units(2)])
+                            .width(Length::Fill)
+                            .style(style::ghost)
+                            .on_press(Message::MentionPicked(name, jid)),
+                    )
+                },
+            ))
+            .padding(units(1))
+            .width(Length::Fill)
+            .style(style::elevated),
+        );
+    }
+    let bottom = bottom.push(composer);
+    column![header, messages, bottom]
         .spacing(units(3))
         .height(Length::Fill)
         .into()

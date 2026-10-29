@@ -4,7 +4,7 @@ use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{ContextMenu, Icon, Section, cursor, menu, style};
 use iced::widget::{
-    Column, button, column, container, mouse_area, opaque, row, space, stack, text,
+    Column, button, column, container, mouse_area, opaque, row, space, stack, text, toggler,
 };
 use iced::window::Direction;
 use iced::{Alignment, Element, Length, Padding, mouse};
@@ -382,10 +382,15 @@ fn general_settings(app: &App) -> Element<'_, Message> {
         heading("Sistema"),
         muted("Estas opções ficam em config.toml e são recarregadas sozinhas quando o arquivo muda. O renderizador vale na próxima abertura."),
         line("Renderizador", renderer.to_string()),
-        line(
-            "Iniciar com o sistema",
-            if config.general.start_with_system { "Sim" } else { "Não" }.to_string()
-        ),
+        row![
+            muted("Iniciar com o sistema").width(200),
+            toggler(config.general.start_with_system)
+                .on_toggle(Message::StartWithSystem)
+                .size(16),
+            muted("abre só na bandeja"),
+        ]
+        .spacing(units(3))
+        .align_y(Alignment::Center),
         line("Configuração", app.ctx.paths.config_file().display().to_string()),
         line("Dados", app.ctx.paths.data_dir.display().to_string()),
         space().height(units(4)),

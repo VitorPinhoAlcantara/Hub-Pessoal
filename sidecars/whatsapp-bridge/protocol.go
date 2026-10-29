@@ -20,6 +20,8 @@ const (
 	CmdListConversations = "listar_conversas"
 	CmdListMessages      = "listar_mensagens"
 	CmdSend              = "enviar"
+	CmdSendFile          = "enviar_arquivo"
+	CmdParticipants      = "participantes"
 	CmdChatInfo          = "info_conversas"
 	CmdDownloadMedia     = "baixar_midia"
 	CmdShutdown          = "encerrar"
@@ -58,6 +60,7 @@ type Command struct {
 	JIDs      []string `json:"jids,omitempty"`
 	Media     string   `json:"midia,omitempty"`
 	MessageID string   `json:"mensagem_id,omitempty"`
+	Path      string   `json:"caminho,omitempty"`
 }
 
 type rawCommand struct {
@@ -69,6 +72,7 @@ type rawCommand struct {
 	JIDs      []string `json:"jids"`
 	Media     string   `json:"midia"`
 	MessageID string   `json:"mensagem_id"`
+	Path      string   `json:"caminho"`
 }
 
 type OKResponse struct {
@@ -103,6 +107,11 @@ type Message struct {
 	At       int64  `json:"em"`
 	Kind     string `json:"tipo"`
 	Media    string `json:"midia,omitempty"`
+}
+
+type Participant struct {
+	JID  string `json:"jid"`
+	Name string `json:"nome"`
 }
 
 type ChatInfo struct {
@@ -144,6 +153,7 @@ func decodeCommand(line []byte) (Command, error) {
 		JIDs:      raw.JIDs,
 		Media:     raw.Media,
 		MessageID: strings.TrimSpace(raw.MessageID),
+		Path:      strings.TrimSpace(raw.Path),
 	}
 	if cmd.Cmd == "" {
 		return cmd, errors.New("comando sem o campo cmd")
@@ -254,11 +264,11 @@ func classifyMessage(msg *waE2E.Message) (kind string, text string) {
 		return KindAudio, ""
 	}
 	if doc := msg.GetDocumentMessage(); doc != nil {
-		return KindDocument, doc.GetCaption()
+		return KindDocument, documentText(doc)
 	}
 	if wrapped := msg.GetDocumentWithCaptionMessage(); wrapped != nil {
 		if doc := wrapped.GetMessage().GetDocumentMessage(); doc != nil {
-			return KindDocument, doc.GetCaption()
+			return KindDocument, documentText(doc)
 		}
 	}
 	if msg.GetStickerMessage() != nil {
@@ -301,6 +311,39 @@ func messageFromEvent(evt *events.Message) Message {
 		At:       at,
 		Kind:     kind,
 	}
+}
+
+func messageContext(msg *waE2E.Message) *waE2E.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+	switch {
+	case msg.GetExtendedTextMessage() != nil:
+		return msg.GetExtendedTextMessage().GetContextInfo()
+	case msg.GetImageMessage() != nil:
+		return msg.GetImageMessage().GetContextInfo()
+	case msg.GetVideoMessage() != nil:
+		return msg.GetVideoMessage().GetContextInfo()
+	case msg.GetDocumentMessage() != nil:
+		return msg.GetDocumentMessage().GetContextInfo()
+	case msg.GetDocumentWithCaptionMessage() != nil:
+		return messageContext(msg.GetDocumentWithCaptionMessage().GetMessage())
+	}
+	return nil
+}
+
+func replaceMentions(text string, names map[string]string) string {
+	for user, name := range names {
+		text = strings.ReplaceAll(text, "@"+user, "@"+name)
+	}
+	return text
+}
+
+func documentText(doc *waE2E.DocumentMessage) string {
+	if caption := doc.GetCaption(); caption != "" {
+		return caption
+	}
+	return doc.GetFileName()
 }
 
 func sentMessage(id string, chat types.JID, own types.JID, text string, at time.Time) Message {

@@ -19,7 +19,6 @@ pub enum Message {
     NewSession,
     Select(u64),
     KillActive,
-    Hide,
     ClosePanel,
     Reap,
 }
@@ -143,14 +142,6 @@ impl Terminal {
         self.sessions.is_empty() && self.retired.is_empty()
     }
 
-    pub fn close_all(&mut self) -> Task<Message> {
-        for id in self.tabs.ids().to_vec() {
-            self.tabs.remove(id);
-        }
-        self.retired.append(&mut self.sessions);
-        reap_later()
-    }
-
     pub fn focus(&self) -> Task<Message> {
         match self.active_session() {
             Some(session) => TerminalView::focus(session.term.widget_id().clone()),
@@ -196,7 +187,7 @@ impl Terminal {
                 self.retired.clear();
                 Task::none()
             }
-            Message::Hide | Message::ClosePanel => Task::none(),
+            Message::ClosePanel => Task::none(),
         }
     }
 

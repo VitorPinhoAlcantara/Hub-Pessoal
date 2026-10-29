@@ -76,6 +76,23 @@ fn messages_are_stored_once_and_conversations_follow_last_message() {
 }
 
 #[test]
+fn pinned_conversations_come_first_in_their_order() {
+    let db = Database::open_in_memory().unwrap();
+    let c = db.conn();
+    for (id, jid, at) in [("1", "a@s.whatsapp.net", 1_000), ("2", "b@s.whatsapp.net", 2_000), ("3", "c@s.whatsapp.net", 3_000)] {
+        store_message(c, &wire_to_message(&wire(id, jid, "oi", false, at, "texto"))).unwrap();
+    }
+    let order = |c| -> Vec<String> { conversations(c).unwrap().into_iter().map(|x| x.jid).collect() };
+    assert_eq!(order(c)[0], "c@s.whatsapp.net");
+    set_pinned_order(c, &["a@s.whatsapp.net".into(), "b@s.whatsapp.net".into()]).unwrap();
+    assert_eq!(order(c), ["a@s.whatsapp.net", "b@s.whatsapp.net", "c@s.whatsapp.net"]);
+    assert!(conversations(c).unwrap()[0].pinned);
+    set_pinned_order(c, &["b@s.whatsapp.net".into()]).unwrap();
+    assert_eq!(order(c)[0], "b@s.whatsapp.net");
+    assert!(!conversations(c).unwrap()[1].pinned);
+}
+
+#[test]
 fn alias_has_priority_and_can_be_removed() {
     let db = Database::open_in_memory().unwrap();
     let c = db.conn();
@@ -280,6 +297,7 @@ fn phone_labels_and_titles_hide_identifiers() {
         last_at: None,
         preview: None,
         notify: false,
+        pinned: false,
     };
     assert_eq!(conversation.title(), "Contato sem nome");
     conversation.group = true;

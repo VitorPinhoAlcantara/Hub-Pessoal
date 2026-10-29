@@ -8,10 +8,13 @@ use futures::{FutureExt, Stream, StreamExt};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::protocol::{self, Incoming, Request, WireChatInfo, WireConversation, WireMessage};
+use super::protocol::{
+    self, Incoming, Request, WireChatInfo, WireConversation, WireMessage, WireParticipant,
+};
 use crate::platform::{self, CommandSpec};
 
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 type Reply = oneshot::Sender<Result<Value, String>>;
 
@@ -42,6 +45,10 @@ impl BridgeHandle {
     }
 
     pub async fn call(&self, request: Request) -> Result<Value, String> {
+        self.call_within(request, CALL_TIMEOUT).await
+    }
+
+    async fn call_within(&self, request: Request, limit: Duration) -> Result<Value, String> {
         let (reply, answer) = oneshot::channel();
         self.tx
             .unbounded_send(Outgoing {
@@ -49,7 +56,7 @@ impl BridgeHandle {
                 reply: Some(reply),
             })
             .map_err(|_| "o WhatsApp não está aberto".to_string())?;
-        match tokio::time::timeout(CALL_TIMEOUT, answer).await {
+        match tokio::time::timeout(limit, answer).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("o WhatsApp foi encerrado".to_string()),
             Err(_) => Err("o WhatsApp não respondeu a tempo".to_string()),
@@ -81,11 +88,49 @@ impl BridgeHandle {
     }
 
     pub async fn send_text(&self, jid: &str, text: &str) -> Result<WireMessage, String> {
+        self.send_with_mentions(jid, text, Vec::new()).await
+    }
+
+    pub async fn send_with_mentions(
+        &self,
+        jid: &str,
+        text: &str,
+        mentions: Vec<String>,
+    ) -> Result<WireMessage, String> {
         let value = self
             .call(Request::Send {
                 jid: jid.to_string(),
                 text: text.to_string(),
+                mentions,
             })
+            .await?;
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
+    pub async fn participants(&self, jid: &str) -> Result<Vec<WireParticipant>, String> {
+        let value = self
+            .call(Request::Participants {
+                jid: jid.to_string(),
+            })
+            .await?;
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
+    pub async fn send_file(
+        &self,
+        jid: &str,
+        path: &std::path::Path,
+        caption: &str,
+    ) -> Result<WireMessage, String> {
+        let value = self
+            .call_within(
+                Request::SendFile {
+                    jid: jid.to_string(),
+                    path: path.to_string_lossy().into_owned(),
+                    caption: caption.to_string(),
+                },
+                UPLOAD_TIMEOUT,
+            )
             .await?;
         serde_json::from_value(value).map_err(|e| e.to_string())
     }

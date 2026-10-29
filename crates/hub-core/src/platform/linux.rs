@@ -117,6 +117,32 @@ fn run_tray_loop(apply: &mut dyn FnMut()) {
     }
 }
 
+pub(super) fn set_autostart(exe: &Path, enabled: bool) -> Result<(), PlatformError> {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .ok_or(PlatformError::Unsupported("pasta de configuração do usuário"))?;
+    let dir = config_home.join("autostart");
+    let file = dir.join(format!("{}.desktop", crate::channel::Channel::current().dir_name()));
+    if !enabled {
+        return match std::fs::remove_file(&file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        file,
+        format!(
+            "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\" --bandeja\nX-GNOME-Autostart-enabled=true\n",
+            crate::channel::app_name(),
+            exe.display()
+        ),
+    )?;
+    Ok(())
+}
+
 fn data_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let data_home = std::env::var_os("XDG_DATA_HOME")

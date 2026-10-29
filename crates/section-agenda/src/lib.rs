@@ -59,6 +59,7 @@ pub enum Message {
     ModalClosed,
     TaskToggled(i64, bool),
     TaskMissed(i64, bool),
+    OpenRoutine(i64),
     FilterToggled(CardKind),
     ModifiersChanged(Modifiers),
     ShiftDays(i64),
@@ -280,11 +281,8 @@ impl Agenda {
                 }
                 CardId::Reminder(id) => agenda::get_reminder(db.conn(), id)
                     .map(|reminder| Editor::for_reminder(&reminder, today)),
-                CardId::Projection { .. } => {
-                    drop(db);
-                    self.screen = Screen::Routines;
-                    return;
-                }
+                CardId::Projection { routine, .. } => agenda::get_routine(db.conn(), routine)
+                    .map(|routine| Editor::for_routine(&routine, today)),
             }
         };
         match loaded {
@@ -326,6 +324,9 @@ impl Agenda {
                 }
                 (EditorTarget::Reminder(id), EditorOutput::Reminder { title, notes, at }) => {
                     agenda::update_reminder(conn, id, &title, &notes, at, now)?;
+                }
+                (EditorTarget::Routine(id), EditorOutput::Routine(routine)) => {
+                    agenda::update_routine(conn, id, routine)?;
                 }
                 _ => {}
             }
@@ -379,6 +380,9 @@ impl Agenda {
         let card = self.card(id)?.clone();
         let mut items = Vec::new();
         if card.projected {
+            items.push(
+                MenuItem::new("Editar a rotina", Message::OpenCard(id)).icon(Icon::Edit),
+            );
             items.push(
                 MenuItem::new("Ver rotinas", Message::ScreenSelected(Screen::Routines))
                     .icon(Icon::Repeat),
@@ -531,6 +535,16 @@ impl Section for Agenda {
             Message::OpenCreateRoutine => {
                 let editor = Editor::new(CardKind::Routine, None, self.today);
                 self.modal = Some(Modal::Editor(Box::new(editor)));
+            }
+            Message::OpenRoutine(id) => {
+                let loaded = agenda::get_routine(self.ctx.db().conn(), id);
+                match loaded {
+                    Ok(routine) => {
+                        let editor = Editor::for_routine(&routine, self.today);
+                        self.modal = Some(Modal::Editor(Box::new(editor)));
+                    }
+                    Err(error) => self.fail(error),
+                }
             }
             Message::OpenCard(id) => {
                 self.menu = None;

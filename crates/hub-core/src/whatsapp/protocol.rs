@@ -46,12 +46,25 @@ pub struct WireChatInfo {
     pub arquivada: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WireParticipant {
+    pub jid: String,
+    #[serde(default)]
+    pub nome: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Login,
     ListConversations,
     ListMessages { jid: String, limit: usize },
-    Send { jid: String, text: String },
+    Send {
+        jid: String,
+        text: String,
+        mentions: Vec<String>,
+    },
+    Participants { jid: String },
+    SendFile { jid: String, path: String, caption: String },
     ChatInfo { jids: Vec<String> },
     DownloadMedia { id: String, media: String },
     Shutdown,
@@ -64,8 +77,16 @@ pub fn encode(request: &Request, id: u64) -> String {
         Request::ListMessages { jid, limit } => {
             json!({ "id": id, "cmd": "listar_mensagens", "jid": jid, "limite": limit })
         }
-        Request::Send { jid, text } => {
-            json!({ "id": id, "cmd": "enviar", "jid": jid, "texto": text })
+        Request::Send {
+            jid,
+            text,
+            mentions,
+        } => {
+            json!({ "id": id, "cmd": "enviar", "jid": jid, "texto": text, "jids": mentions })
+        }
+        Request::Participants { jid } => json!({ "id": id, "cmd": "participantes", "jid": jid }),
+        Request::SendFile { jid, path, caption } => {
+            json!({ "id": id, "cmd": "enviar_arquivo", "jid": jid, "caminho": path, "texto": caption })
         }
         Request::ChatInfo { jids } => json!({ "id": id, "cmd": "info_conversas", "jids": jids }),
         Request::DownloadMedia { id: message, media } => {
@@ -147,6 +168,7 @@ mod tests {
             &Request::Send {
                 jid: "5511@s.whatsapp.net".into(),
                 text: "oi".into(),
+                mentions: vec!["9@s.whatsapp.net".into()],
             },
             9,
         );
@@ -155,6 +177,7 @@ mod tests {
         assert_eq!(value["cmd"], "enviar");
         assert_eq!(value["id"], 9);
         assert_eq!(value["texto"], "oi");
+        assert_eq!(value["jids"][0], "9@s.whatsapp.net");
         let list: Value = serde_json::from_str(
             encode(
                 &Request::ListMessages {

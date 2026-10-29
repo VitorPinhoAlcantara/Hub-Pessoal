@@ -364,3 +364,29 @@ fn images_download_only_when_requested() {
     );
     assert!(matches!(tester.section.media("I1"), Some(Media::Failed(e)) if e == "expirou"));
 }
+
+#[test]
+fn dragging_reorders_pins() {
+    let pins: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+    assert_eq!(reorder_pins(&pins, "a", "c").unwrap(), ["b", "c", "a"]);
+    assert_eq!(reorder_pins(&pins, "c", "a").unwrap(), ["c", "a", "b"]);
+    assert_eq!(reorder_pins(&pins, "x", "b").unwrap(), ["a", "x", "b", "c"]);
+    assert_eq!(reorder_pins(&pins, "b", "x").unwrap(), ["a", "c"]);
+    assert!(reorder_pins(&pins, "x", "y").is_none());
+    assert!(reorder_pins(&pins, "a", "a").is_none());
+}
+
+#[test]
+fn mentions_become_numbers_and_everyone_tags_all() {
+    let mentions = vec![
+        ("Ana".to_string(), "5511@s.whatsapp.net".to_string()),
+        ("Ana Paula".to_string(), "77@lid".to_string()),
+    ];
+    let (text, jids) = apply_mentions("oi @Ana Paula e @Ana", &mentions, &[]);
+    assert_eq!(text, "oi @77 e @5511");
+    assert_eq!(jids, ["5511@s.whatsapp.net", "77@lid"]);
+    let everyone = vec!["1@lid".to_string(), "2@lid".to_string()];
+    let (text, jids) = apply_mentions("@todos reunião", &[], &everyone);
+    assert_eq!(text, "@todos reunião");
+    assert_eq!(jids, everyone);
+}

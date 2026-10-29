@@ -132,6 +132,40 @@ pub(super) fn begin_window_drag(raw_window: u64, drag: super::WindowDrag) {
     }
 }
 
+pub(super) fn set_autostart(exe: &Path, enabled: bool) -> Result<(), PlatformError> {
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
+    };
+    let key = wide(OsStr::new(r"Software\Microsoft\Windows\CurrentVersion\Run"));
+    let name = wide(OsStr::new(crate::channel::app_name()));
+    let status = if enabled {
+        let command = wide(OsStr::new(&format!("\"{}\" --bandeja", exe.display())));
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                REG_SZ,
+                command.as_ptr().cast(),
+                (command.len() * 2) as u32,
+            )
+        }
+    } else {
+        match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) } {
+            ERROR_FILE_NOT_FOUND => 0,
+            status => status,
+        }
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(PlatformError::Io(std::io::Error::from_raw_os_error(
+            status as i32,
+        )))
+    }
+}
+
 pub(super) fn notification_app_id() -> &'static str {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
     static REGISTERED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();

@@ -129,6 +129,7 @@ pub enum Message {
     Appearance(appearance::Message),
     SettingsTab(SettingsTab),
     BrowserLogin(hub_core::config::BrowserLogin),
+    StartWithSystem(bool),
     OpenPersonalization,
     SmokeStep(usize),
 }
@@ -736,13 +737,7 @@ impl App {
                 self.toolbar_menu = None;
                 return self.toggle_terminal();
             }
-            Message::Terminal(panel_terminal::Message::Hide) => self.terminal_open = false,
-            Message::Terminal(panel_terminal::Message::ClosePanel) => {
-                self.terminal_open = false;
-                if let Some(terminal) = &mut self.terminal {
-                    return terminal.close_all().map(Message::Terminal);
-                }
-            }
+            Message::Terminal(panel_terminal::Message::ClosePanel) => self.terminal_open = false,
             Message::Terminal(message) => {
                 if let Some(terminal) = &mut self.terminal {
                     let task = terminal.update(message).map(Message::Terminal);
@@ -907,6 +902,18 @@ impl App {
                 config.player.browser_login = browser;
                 if let Err(error) = config.save(&self.ctx.paths.config_file()) {
                     tracing::warn!(%error, "falha ao salvar o navegador do player");
+                }
+                *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
+            }
+            Message::StartWithSystem(enabled) => {
+                if let Err(error) = hub_core::platform::set_autostart(enabled) {
+                    tracing::warn!(%error, "falha ao configurar o início com o sistema");
+                    return Task::none();
+                }
+                let mut config = self.ctx.config();
+                config.general.start_with_system = enabled;
+                if let Err(error) = config.save(&self.ctx.paths.config_file()) {
+                    tracing::warn!(%error, "falha ao salvar o início com o sistema");
                 }
                 *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
             }

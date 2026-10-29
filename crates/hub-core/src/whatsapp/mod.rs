@@ -98,6 +98,7 @@ pub struct Conversation {
     pub last_at: Option<NaiveDateTime>,
     pub preview: Option<String>,
     pub notify: bool,
+    pub pinned: bool,
 }
 
 impl Conversation {
@@ -274,7 +275,7 @@ const CONVERSATION_COLUMNS: &str =
     "SELECT c.jid, c.nome, a.apelido, c.grupo, c.arquivada, c.ultima_em,
         (SELECT CASE WHEN m.texto <> '' THEN m.texto ELSE '[' || m.tipo || ']' END
          FROM wa_mensagens m WHERE m.jid = c.jid ORDER BY m.em DESC LIMIT 1),
-        c.notificar
+        c.notificar, c.fixada IS NOT NULL
      FROM wa_conversas c LEFT JOIN wa_apelidos a ON a.jid = c.jid";
 
 fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
@@ -287,13 +288,15 @@ fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversati
         last_at: row.get(5)?,
         preview: row.get(6)?,
         notify: row.get(7)?,
+        pinned: row.get(8)?,
     })
 }
 
 pub fn conversations(conn: &Connection) -> rusqlite::Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(&format!(
         "{CONVERSATION_COLUMNS}
-         ORDER BY c.ultima_em IS NULL, c.ultima_em DESC, COALESCE(a.apelido, c.nome)"
+         ORDER BY c.fixada IS NULL, c.fixada, c.ultima_em IS NULL, c.ultima_em DESC,
+             COALESCE(a.apelido, c.nome)"
     ))?;
     stmt.query_map([], conversation_from_row)?.collect()
 }
@@ -313,6 +316,18 @@ pub fn set_notify(conn: &Connection, jid: &str, notify: bool) -> rusqlite::Resul
         params![jid, notify],
     )?;
     Ok(())
+}
+
+pub fn set_pinned_order(conn: &Connection, jids: &[String]) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE wa_conversas SET fixada = NULL WHERE fixada IS NOT NULL", [])?;
+    for (position, jid) in jids.iter().enumerate() {
+        tx.execute(
+            "UPDATE wa_conversas SET fixada = ?2 WHERE jid = ?1",
+            params![jid, position as i64],
+        )?;
+    }
+    tx.commit()
 }
 
 pub fn is_group_jid(jid: &str) -> bool {

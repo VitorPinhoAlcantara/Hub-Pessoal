@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,8 +135,22 @@ func (b *bridge) handle(cmd Command) {
 			return
 		}
 		b.out.write(okResponse(cmd.ID, DownloadResult{Path: path}))
+	case CmdSendFile:
+		msg, err := b.sendFile(cmd.JID, cmd.Path, cmd.Text)
+		if err != nil {
+			b.out.write(errorResponse(cmd.ID, "Não foi possível enviar o arquivo: "+err.Error()))
+			return
+		}
+		b.out.write(okResponse(cmd.ID, msg))
+	case CmdParticipants:
+		participants, err := b.participants(cmd.JID)
+		if err != nil {
+			b.out.write(errorResponse(cmd.ID, "Não foi possível listar os participantes: "+err.Error()))
+			return
+		}
+		b.out.write(okResponse(cmd.ID, participants))
 	case CmdSend:
-		msg, err := b.send(cmd.JID, cmd.Text)
+		msg, err := b.send(cmd.JID, cmd.Text, cmd.JIDs)
 		if err != nil {
 			b.out.write(errorResponse(cmd.ID, "Não foi possível enviar a mensagem: "+err.Error()))
 			return
@@ -327,9 +343,69 @@ func (b *bridge) enrich(client *whatsmeow.Client, evt *events.Message, msg *Mess
 	if img := evt.Message.GetImageMessage(); img != nil {
 		msg.Media = encodeImage(img)
 	}
+	if mentioned := messageContext(evt.Message).GetMentionedJID(); len(mentioned) > 0 {
+		names := map[string]string{}
+		for _, raw := range mentioned {
+			jid, err := types.ParseJID(raw)
+			if err != nil {
+				continue
+			}
+			if name := b.displayName(ctx, client, jid); name != "" {
+				names[jid.User] = name
+			}
+		}
+		msg.Text = replaceMentions(msg.Text, names)
+	}
 }
 
-func (b *bridge) send(jid, text string) (Message, error) {
+func (b *bridge) displayName(ctx context.Context, client *whatsmeow.Client, jid types.JID) string {
+	resolved := b.resolve(ctx, client, jid)
+	if client.Store.ID != nil && resolved.User == client.Store.ID.User {
+		return "você"
+	}
+	info, err := client.Store.Contacts.GetContact(ctx, resolved)
+	if err != nil || !info.Found {
+		return ""
+	}
+	if name := savedName(info); name != "" {
+		return name
+	}
+	return strings.TrimSpace(info.PushName)
+}
+
+func (b *bridge) participants(jid string) ([]Participant, error) {
+	group, err := types.ParseJID(jid)
+	if err != nil || group.Server != types.GroupServer {
+		return nil, errors.New("conversa não é um grupo")
+	}
+	client := b.current()
+	if !client.IsLoggedIn() {
+		return nil, errNotConnected
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
+	defer cancel()
+	info, err := client.GetGroupInfo(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Participant, 0, len(info.Participants))
+	for _, p := range info.Participants {
+		name := b.displayName(ctx, client, p.JID)
+		if name == "você" {
+			continue
+		}
+		if name == "" && !p.PhoneNumber.IsEmpty() {
+			name = "+" + p.PhoneNumber.User
+		}
+		if name == "" {
+			name = p.JID.User
+		}
+		result = append(result, Participant{JID: p.JID.ToNonAD().String(), Name: name})
+	}
+	return result, nil
+}
+
+func (b *bridge) send(jid, text string, mentions []string) (Message, error) {
 	if strings.TrimSpace(jid) == "" {
 		return Message{}, errors.New("conversa não informada")
 	}
@@ -346,11 +422,105 @@ func (b *bridge) send(jid, text string) (Message, error) {
 	}
 	ctx, cancel := context.WithTimeout(b.ctx, 60*time.Second)
 	defer cancel()
-	resp, err := client.SendMessage(ctx, target, &waE2E.Message{Conversation: proto.String(text)})
+	content := &waE2E.Message{Conversation: proto.String(text)}
+	if len(mentions) > 0 {
+		content = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text:        proto.String(text),
+			ContextInfo: &waE2E.ContextInfo{MentionedJID: mentions},
+		}}
+	}
+	resp, err := client.SendMessage(ctx, target, content)
 	if err != nil {
 		return Message{}, err
 	}
 	return sentMessage(string(resp.ID), target, *client.Store.ID, text, resp.Timestamp), nil
+}
+
+const maxFileSize = 100 << 20
+
+func (b *bridge) sendFile(jid, path, caption string) (Message, error) {
+	target, err := types.ParseJID(jid)
+	if err != nil || strings.TrimSpace(jid) == "" {
+		return Message{}, errors.New("conversa inválida")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return Message{}, err
+	}
+	if info.Size() > maxFileSize {
+		return Message{}, errors.New("arquivo maior que 100 MB")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Message{}, err
+	}
+	client := b.current()
+	if !client.IsLoggedIn() || client.Store.ID == nil {
+		return Message{}, errNotConnected
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Minute)
+	defer cancel()
+	mimeType := fileMimeType(path, data)
+	name := filepath.Base(path)
+	image := strings.HasPrefix(mimeType, "image/") && mimeType != "image/svg+xml"
+	mediaType := whatsmeow.MediaDocument
+	if image {
+		mediaType = whatsmeow.MediaImage
+	}
+	up, err := client.Upload(ctx, data, mediaType)
+	if err != nil {
+		return Message{}, err
+	}
+	var msg *waE2E.Message
+	kind, text := KindDocument, name
+	if image {
+		kind, text = KindImage, caption
+		msg = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+			Caption:       proto.String(caption),
+			Mimetype:      proto.String(mimeType),
+			URL:           &up.URL,
+			DirectPath:    &up.DirectPath,
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    &up.FileLength,
+		}}
+	} else {
+		doc := &waE2E.DocumentMessage{
+			FileName:      proto.String(name),
+			Title:         proto.String(name),
+			Mimetype:      proto.String(mimeType),
+			URL:           &up.URL,
+			DirectPath:    &up.DirectPath,
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    &up.FileLength,
+		}
+		if caption != "" {
+			doc.Caption = proto.String(caption)
+			text = caption
+			msg = &waE2E.Message{DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{DocumentMessage: doc},
+			}}
+		} else {
+			msg = &waE2E.Message{DocumentMessage: doc}
+		}
+	}
+	resp, err := client.SendMessage(ctx, target, msg)
+	if err != nil {
+		return Message{}, err
+	}
+	sent := sentMessage(string(resp.ID), target, *client.Store.ID, text, resp.Timestamp)
+	sent.Kind = kind
+	return sent, nil
+}
+
+func fileMimeType(path string, data []byte) string {
+	if byExt := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); byExt != "" {
+		return strings.SplitN(byExt, ";", 2)[0]
+	}
+	return strings.SplitN(http.DetectContentType(data), ";", 2)[0]
 }
 
 func (b *bridge) handleEvent(client *whatsmeow.Client, evt any) {

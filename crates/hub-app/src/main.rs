@@ -126,12 +126,17 @@ fn main() -> anyhow::Result<()> {
         hub_core::chrono::Local::now().naive_local(),
     );
     let mut config = Config::load_or_create(&paths.config_file()).context("lendo config.toml")?;
+    let autostart = (!options.smoke_test)
+        .then(|| hub_core::platform::set_autostart(config.general.start_with_system));
     let translucent_failed = appearance::guard_translucent_start(&paths, &mut config);
     configure_renderer(
         config.general.renderer,
         config.appearance.wallpaper.mode == hub_core::config::WallpaperMode::Translucent,
     );
     let _log_guard = hub_core::logging::init(&paths.logs_dir).context("iniciando os logs")?;
+    if let Some(Err(error)) = autostart {
+        tracing::warn!(%error, "falha ao sincronizar o início com o sistema");
+    }
     if translucent_failed {
         tracing::warn!("a janela translúcida falhou na última abertura e foi desligada");
     }

@@ -1,5 +1,5 @@
 use hub_core::agenda::quick_add::parse_time;
-use hub_core::agenda::{NewRoutine, Recurrence};
+use hub_core::agenda::{NewRoutine, Recurrence, Routine};
 use hub_core::chrono::{NaiveDate, Weekday};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +67,32 @@ impl RoutineForm {
             time: String::new(),
             start,
         }
+    }
+
+    pub fn from_routine(routine: &Routine, today: NaiveDate) -> Self {
+        let mut form = Self::new(today);
+        form.title = routine.title.clone();
+        form.time = routine
+            .time
+            .map(|t| t.format("%H:%M").to_string())
+            .unwrap_or_default();
+        match &routine.recurrence {
+            Recurrence::Daily => form.kind = RecurrenceKind::Daily,
+            Recurrence::Weekdays(days) => {
+                form.kind = RecurrenceKind::Weekdays;
+                form.weekdays = WEEKDAYS.map(|day| days.contains(&day));
+            }
+            Recurrence::MonthDay(day) => {
+                form.kind = RecurrenceKind::MonthDay;
+                form.number = day.to_string();
+            }
+            Recurrence::EveryNDays { days, start } => {
+                form.kind = RecurrenceKind::EveryNDays;
+                form.number = days.to_string();
+                form.start = *start;
+            }
+        }
+        form
     }
 
     pub fn update(&mut self, message: RoutineFormMessage) {

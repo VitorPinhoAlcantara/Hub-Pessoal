@@ -343,3 +343,36 @@ func TestArchivedEventKeepsFalse(t *testing.T) {
 		t.Fatalf("formato inesperado: %s", encoded)
 	}
 }
+
+func TestDecodeCommandSendFile(t *testing.T) {
+	cmd, err := decodeCommand([]byte(`{"id":9,"cmd":"enviar_arquivo","jid":"5511@s.whatsapp.net","caminho":" C:/a.pdf ","texto":"veja"}`))
+	if err != nil || cmd.Cmd != CmdSendFile || cmd.Path != "C:/a.pdf" || cmd.Text != "veja" {
+		t.Fatalf("comando inesperado: %+v %v", cmd, err)
+	}
+}
+
+func TestDocumentTextFallsBackToFileName(t *testing.T) {
+	doc := &waE2E.DocumentMessage{FileName: proto.String("nota.pdf")}
+	if documentText(doc) != "nota.pdf" {
+		t.Fatal("esperava o nome do arquivo")
+	}
+}
+
+func TestReplaceMentionsUsesNames(t *testing.T) {
+	got := replaceMentions("oi @5511999 e @1404", map[string]string{"5511999": "Ana", "1404": "Bia"})
+	if got != "oi @Ana e @Bia" {
+		t.Fatalf("texto inesperado: %q", got)
+	}
+}
+
+func TestMessageContextReadsExtendedText(t *testing.T) {
+	msg := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+		ContextInfo: &waE2E.ContextInfo{MentionedJID: []string{"1@s.whatsapp.net"}},
+	}}
+	if len(messageContext(msg).GetMentionedJID()) != 1 {
+		t.Fatal("esperava uma menção")
+	}
+	if messageContext(nil) != nil {
+		t.Fatal("esperava nil")
+	}
+}

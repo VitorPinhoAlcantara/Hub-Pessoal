@@ -74,12 +74,6 @@ pub fn view(panel: &Terminal) -> Element<'_, Message> {
                 Message::KillActive
             ),
             action(
-                Icon::ChevronDown,
-                text_secondary(),
-                "Esconder painel",
-                Message::Hide
-            ),
-            action(
                 Icon::Close,
                 text_secondary(),
                 "Fechar painel",

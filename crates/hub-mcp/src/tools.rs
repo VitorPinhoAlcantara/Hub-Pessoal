@@ -161,6 +161,16 @@ pub struct WhatsAppSendRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct WhatsAppSendFileRequest {
+    #[schemars(description = "Conversa: apelido, nome do contato ou grupo, ou o JID")]
+    pub conversa: String,
+    #[schemars(description = "Caminho completo do arquivo neste computador")]
+    pub caminho: String,
+    #[schemars(description = "Legenda opcional")]
+    pub legenda: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct NotesListRequest {
     #[schemars(description = "Texto a procurar no título ou no corpo. Vazio lista todas")]
     pub busca: Option<String>,
@@ -1133,6 +1143,40 @@ impl HubTools {
         whatsapp::store_message(self.ctx.db().conn(), &message).map_err(|e| e.to_string())?;
         self.ctx.events.publish(HubEvent::WhatsAppChanged);
         Ok(format!("Mensagem enviada para {}", conversation.title()))
+    }
+
+    #[tool(
+        description = "Envia um arquivo no WhatsApp (imagem vai como foto, o resto como documento). Pede confirmação ao usuário e exige o WhatsApp conectado"
+    )]
+    async fn whatsapp_enviar_arquivo(
+        &self,
+        Parameters(request): Parameters<WhatsAppSendFileRequest>,
+    ) -> Result<String, String> {
+        let path = std::path::PathBuf::from(request.caminho.trim());
+        if !path.is_file() {
+            return Err("arquivo não encontrado".to_string());
+        }
+        let caption = request.legenda.unwrap_or_default().trim().to_string();
+        let conversation = whatsapp::find_conversation(self.ctx.db().conn(), &request.conversa)
+            .map_err(|e| e.to_string())?
+            .ok_or("conversa não encontrada no hub")?;
+        let handle = self.ctx.whatsapp.get().ok_or(
+            "o WhatsApp não está conectado; peça ao usuário para abrir a aba WhatsApp no hub",
+        )?;
+        let approved = self
+            .confirm(
+                format!("Enviar arquivo para {}?", conversation.title()),
+                path.display().to_string(),
+            )
+            .await;
+        if !approved {
+            return Err("o usuário recusou ou não respondeu a tempo".to_string());
+        }
+        let sent = handle.send_file(&conversation.jid, &path, &caption).await?;
+        let message = whatsapp::wire_to_message(&sent);
+        whatsapp::store_message(self.ctx.db().conn(), &message).map_err(|e| e.to_string())?;
+        self.ctx.events.publish(HubEvent::WhatsAppChanged);
+        Ok(format!("Arquivo enviado para {}", conversation.title()))
     }
 
     #[tool(

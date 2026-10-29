@@ -1,5 +1,5 @@
 use hub_core::agenda::quick_add::parse_time;
-use hub_core::agenda::{NewRoutine, NewTask, Priority, Reminder, Task};
+use hub_core::agenda::{NewRoutine, NewTask, Priority, Reminder, Routine, Task};
 use hub_core::chrono::{NaiveDate, NaiveDateTime};
 use hub_ui_kit::iced::widget::text_editor;
 
@@ -11,6 +11,7 @@ pub enum EditorTarget {
     New,
     Task(i64),
     Reminder(i64),
+    Routine(i64),
 }
 
 #[derive(Debug, Clone)]
@@ -124,12 +125,29 @@ impl Editor {
         }
     }
 
+    pub fn for_routine(routine: &Routine, today: NaiveDate) -> Self {
+        let form = RoutineForm::from_routine(routine, today);
+        Self {
+            target: EditorTarget::Routine(routine.id),
+            kind: CardKind::Routine,
+            title: routine.title.clone(),
+            date: None,
+            time: form.time.clone(),
+            priority: Priority::Normal,
+            notes: text_editor::Content::with_text(&routine.notes),
+            picker: None,
+            routine: form,
+            error: None,
+        }
+    }
+
     pub fn is_new(&self) -> bool {
         self.target == EditorTarget::New
     }
 
-    pub fn creates_routine(&self) -> bool {
-        self.is_new() && self.kind == CardKind::Routine
+    pub fn uses_routine_form(&self) -> bool {
+        self.kind == CardKind::Routine
+            && matches!(self.target, EditorTarget::New | EditorTarget::Routine(_))
     }
 
     pub fn update(&mut self, message: EditorMessage) {
@@ -178,7 +196,7 @@ impl Editor {
         };
         let notes = self.notes_text();
         match self.kind {
-            CardKind::Routine if self.is_new() => {
+            CardKind::Routine if self.uses_routine_form() => {
                 let mut form = self.routine.clone();
                 form.title = title.to_string();
                 form.time = self.time.clone();
@@ -214,6 +232,28 @@ mod tests {
 
     fn today() -> NaiveDate {
         NaiveDate::parse_from_str("2026-10-21", "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn editing_a_routine_keeps_its_recurrence() {
+        use hub_core::agenda::Recurrence;
+        use hub_core::chrono::Weekday;
+        let routine = Routine {
+            id: 7,
+            title: "Academia".into(),
+            notes: "perna".into(),
+            recurrence: Recurrence::Weekdays(vec![Weekday::Mon, Weekday::Thu]),
+            time: NaiveTime::from_hms_opt(7, 0, 0),
+            active: true,
+        };
+        let editor = Editor::for_routine(&routine, today());
+        assert_eq!(editor.target, EditorTarget::Routine(7));
+        let EditorOutput::Routine(built) = editor.build().unwrap() else {
+            panic!("esperava rotina")
+        };
+        assert_eq!(built.recurrence, routine.recurrence);
+        assert_eq!(built.time, routine.time);
+        assert_eq!(built.notes, "perna");
     }
 
     #[test]

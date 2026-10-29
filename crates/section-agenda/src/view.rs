@@ -671,7 +671,7 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
         .on_submit(Message::EditorSaved),
     ));
 
-    if editor.creates_routine() {
+    if editor.uses_routine_form() {
         let routine = &editor.routine;
         let kinds = RecurrenceKind::ALL
             .iter()
@@ -772,7 +772,7 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
         .width(140),
     )]
     .spacing(units(6));
-    if editor.kind != CardKind::Reminder && !editor.creates_routine() {
+    if editor.kind != CardKind::Reminder && !editor.uses_routine_form() {
         let priorities = [
             (Priority::Low, "Baixa"),
             (Priority::Normal, "Normal"),
@@ -807,11 +807,12 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
 
     let mut footer = Row::new().spacing(units(2)).align_y(Alignment::Center);
     let delete_target = match editor.target {
-        crate::EditorTarget::Task(id) => Some(CardId::Task(id)),
-        crate::EditorTarget::Reminder(id) => Some(CardId::Reminder(id)),
+        crate::EditorTarget::Task(id) => Some(DeleteTarget::Card(CardId::Task(id))),
+        crate::EditorTarget::Reminder(id) => Some(DeleteTarget::Card(CardId::Reminder(id))),
+        crate::EditorTarget::Routine(id) => Some(DeleteTarget::Routine(id)),
         crate::EditorTarget::New => None,
     };
-    if let Some(id) = delete_target {
+    if let Some(target) = delete_target {
         footer = footer.push(
             button(
                 row![
@@ -823,10 +824,7 @@ fn editor_view(editor: &Editor, today: NaiveDate) -> Element<'_, Message> {
             )
             .padding([units(2), units(3)])
             .style(style::danger)
-            .on_press(Message::AskDelete(
-                DeleteTarget::Card(id),
-                editor.title.clone(),
-            )),
+            .on_press(Message::AskDelete(target, editor.title.clone())),
         );
     }
     footer = footer
@@ -861,6 +859,10 @@ fn routine_row(routine: &Routine) -> Element<'_, Message> {
             ]
             .spacing(2)
             .width(Length::Fill),
+            button(icon(Icon::Edit, ICON_SIZE - 4.0, text_secondary()))
+                .padding(units(1))
+                .style(style::ghost)
+                .on_press(Message::OpenRoutine(id)),
             button(icon(Icon::Trash, ICON_SIZE - 4.0, text_secondary()))
                 .padding(units(1))
                 .style(style::danger)

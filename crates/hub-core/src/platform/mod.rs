@@ -345,6 +345,18 @@ pub fn firefox_family_profile(root: &Path) -> Option<PathBuf> {
         .filter(|profile| profile.join("cookies.sqlite").exists())
 }
 
+pub fn set_autostart(enabled: bool) -> Result<(), PlatformError> {
+    let exe = std::env::current_exe()?;
+    #[cfg(windows)]
+    {
+        windows::set_autostart(&exe, enabled)
+    }
+    #[cfg(not(windows))]
+    {
+        linux::set_autostart(&exe, enabled)
+    }
+}
+
 pub fn transparency_effects_enabled() -> bool {
     #[cfg(windows)]
     {
