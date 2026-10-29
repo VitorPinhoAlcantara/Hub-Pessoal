@@ -339,11 +339,18 @@ fn settings(app: &App) -> Element<'_, Message> {
             app.settings_tab == SettingsTab::General,
             Message::SettingsTab(SettingsTab::General),
         ),
+        tab_button(
+            Icon::Ai,
+            "IA",
+            app.settings_tab == SettingsTab::Ai,
+            Message::SettingsTab(SettingsTab::Ai),
+        ),
     ]
     .spacing(units(2));
     let content = match app.settings_tab {
         SettingsTab::Personalization => app.personalization.view(&app.ctx, app.zoom),
         SettingsTab::General => general_settings(app),
+        SettingsTab::Ai => ai_settings(app),
     };
     panel(
         column![
@@ -353,6 +360,76 @@ fn settings(app: &App) -> Element<'_, Message> {
         ]
         .spacing(units(3)),
     )
+    .into()
+}
+
+fn ai_settings(app: &App) -> Element<'_, Message> {
+    use hub_core::config::AiProviderKind;
+    use panel_ia::Availability;
+    let config = app.ctx.config();
+    let providers = AiProviderKind::ALL.into_iter().fold(
+        Column::new().spacing(units(3)),
+        |col, kind| {
+            let status = app
+                .ai_status
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map(|(_, a)| a.clone())
+                .unwrap_or(Availability::Checking);
+            let (label, color) = match &status {
+                Availability::Checking => ("Verificando".to_string(), text_secondary()),
+                Availability::Ready(detail) => (detail.clone(), success()),
+                Availability::Missing(detail) => (detail.clone(), danger()),
+                Availability::Problem(detail) => (detail.clone(), warning()),
+            };
+            let selected = config.ai.provider == kind;
+            let pick = button(text(kind.label()).size(FONT_SIZE))
+                .padding([units(1) + 2.0, units(3)])
+                .width(200)
+                .style(style::toggle(selected))
+                .on_press_maybe((status.usable() && !selected).then_some(Message::AiProvider(kind)));
+            let mut item = column![
+                row![pick, small(label).color(color)]
+                    .spacing(units(3))
+                    .align_y(Alignment::Center)
+            ]
+            .spacing(units(1));
+            if !matches!(status, Availability::Ready(_) | Availability::Checking) {
+                item = item.push(muted(panel_ia::availability::install_hint(kind)));
+            }
+            col.push(item)
+        },
+    );
+    let field = |label: &'static str, input: Element<'static, Message>| {
+        row![muted(label).width(200), input]
+            .spacing(units(3))
+            .align_y(Alignment::Center)
+    };
+    column![
+        heading("Provedor do chat"),
+        muted("O chat usa o provedor escolhido aqui. Os que não estão instalados ficam bloqueados até você instalar e verificar de novo."),
+        providers,
+        icon_label_button(Icon::Repeat, "Verificar de novo", Some(Message::AiCheck)),
+        space().height(units(4)),
+        heading("API ou modelo local"),
+        muted("Qualquer servidor compatível com a OpenAI: OpenAI, OpenRouter, Groq, ou modelos locais no Ollama (http://localhost:11434/v1) e LM Studio (http://localhost:1234/v1). O modelo precisa aceitar ferramentas."),
+        field(
+            "Endereço da API",
+            text_field("http://localhost:11434/v1", &config.ai.api_url, Message::AiApiUrl).into()
+        ),
+        field(
+            "Modelo",
+            text_field("por exemplo gpt-4.1-mini ou qwen3", &config.ai.api_model, Message::AiApiModel)
+                .into()
+        ),
+        field(
+            "Chave da API",
+            text_field("vazio para modelos locais", &config.ai.api_key, Message::AiApiKey)
+                .secure(true)
+                .into()
+        ),
+    ]
+    .spacing(units(2))
     .into()
 }
 

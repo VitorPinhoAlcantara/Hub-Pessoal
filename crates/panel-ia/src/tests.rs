@@ -339,3 +339,12 @@ fn image_attachments_are_validated_and_sent() {
     );
     let _ = chat.view();
 }
+
+#[tokio::test]
+async fn idle_stream_ends_with_an_error() {
+    let pending = futures::stream::pending::<AiEvent>().boxed();
+    let events: Vec<AiEvent> = with_idle_timeout(pending, std::time::Duration::from_millis(20))
+        .collect()
+        .await;
+    assert_eq!(events, vec![AiEvent::Error(IDLE_ANSWER.to_string())]);
+}

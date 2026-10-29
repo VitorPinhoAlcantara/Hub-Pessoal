@@ -317,6 +317,64 @@ pub struct Config {
     #[serde(rename = "atualizacao")]
     pub update: UpdateConfig,
     pub player: PlayerConfig,
+    #[serde(rename = "ia")]
+    pub ai: AiConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AiProviderKind {
+    #[default]
+    #[serde(rename = "claude")]
+    Claude,
+    #[serde(rename = "codex")]
+    Codex,
+    #[serde(rename = "gemini")]
+    Gemini,
+    #[serde(rename = "api")]
+    Api,
+}
+
+impl AiProviderKind {
+    pub const ALL: [AiProviderKind; 4] = [
+        AiProviderKind::Claude,
+        AiProviderKind::Codex,
+        AiProviderKind::Gemini,
+        AiProviderKind::Api,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AiProviderKind::Claude => "Claude CLI",
+            AiProviderKind::Codex => "Codex CLI",
+            AiProviderKind::Gemini => "Gemini CLI",
+            AiProviderKind::Api => "API ou modelo local",
+        }
+    }
+}
+
+pub const AI_API_URL_DEFAULT: &str = "http://localhost:11434/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    #[serde(rename = "provedor")]
+    pub provider: AiProviderKind,
+    pub api_url: String,
+    #[serde(rename = "api_modelo")]
+    pub api_model: String,
+    #[serde(rename = "api_chave")]
+    pub api_key: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: AiProviderKind::Claude,
+            api_url: AI_API_URL_DEFAULT.to_string(),
+            api_model: String::new(),
+            api_key: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

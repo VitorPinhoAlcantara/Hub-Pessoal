@@ -9,7 +9,7 @@ use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
 use hub_ui_kit::{Icon, style};
 
-use crate::{Attachment, Chat, Item, Message, PROVIDERS, short_tool_name};
+use crate::{Attachment, Chat, Item, Message, short_tool_name};
 
 pub const PANEL_WIDTH: f32 = 380.0;
 const PREVIEW_SIZE: f32 = 64.0;
@@ -232,21 +232,6 @@ fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
 }
 
 pub fn view(chat: &Chat) -> Element<'_, Message> {
-    let providers = PROVIDERS
-        .iter()
-        .fold(row![].spacing(units(1)), |r, (label, enabled)| {
-            let active = *label == chat.provider_label();
-            r.push(
-                button(text(*label).size(FONT_SIZE_SMALL))
-                    .padding([units(1), units(2)])
-                    .style(style::toggle(active))
-                    .on_press_maybe(
-                        enabled
-                            .then_some(Message::NewConversation)
-                            .filter(|_| !active),
-                    ),
-            )
-        });
     let header = column![
         row![
             icon(Icon::Ai, ICON_SIZE, accent()),
@@ -256,7 +241,7 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         ]
         .spacing(units(2))
         .align_y(Alignment::Center),
-        providers,
+        small(format!("Usando {}. Troque em Configurações, aba IA.", chat.provider_label())),
     ]
     .spacing(units(2));
 

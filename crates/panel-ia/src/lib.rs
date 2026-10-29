@@ -1,3 +1,7 @@
+pub mod availability;
+pub mod codex;
+pub mod gemini;
+pub mod openai;
 pub mod provider;
 mod view;
 
@@ -13,13 +17,32 @@ use hub_ui_kit::iced::widget::{image, markdown};
 use hub_ui_kit::iced::{Element, Subscription, Task};
 use hub_ui_kit::{ContextMenu, Icon, MenuItem, Section, dialog};
 
-pub use provider::{AiEvent, AiProvider, AiRequest, AttachmentInput, ClaudeCli};
+pub use availability::Availability;
+pub use codex::CodexCli;
+pub use gemini::GeminiCli;
+pub use hub_core::config::AiProviderKind;
+pub use openai::OpenAiCompatible;
+pub use provider::{AiEvent, AiProvider, AiRequest, AttachmentInput, ClaudeCli, McpEndpoint};
 
-pub const PROVIDERS: [(&str, bool); 3] = [
-    ("Claude CLI", true),
-    ("Codex", false),
-    ("API ou modelo local", false),
-];
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+pub const NO_ANSWER: &str = "A IA terminou sem responder. Confira o provedor em Configurações, aba IA.";
+pub const IDLE_ANSWER: &str = "A IA ficou 3 minutos sem dar sinal e a espera foi encerrada. Confira a conexão e o provedor em Configurações, aba IA.";
+
+pub fn with_idle_timeout(
+    stream: futures::stream::BoxStream<'static, AiEvent>,
+    limit: std::time::Duration,
+) -> futures::stream::BoxStream<'static, AiEvent> {
+    use futures::StreamExt;
+    futures::stream::unfold(Some(stream), move |state| async move {
+        let mut stream = state?;
+        match tokio::time::timeout(limit, stream.next()).await {
+            Ok(Some(event)) => Some((event, Some(stream))),
+            Ok(None) => None,
+            Err(_) => Some((AiEvent::Error(IDLE_ANSWER.to_string()), None)),
+        }
+    })
+    .boxed()
+}
 
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
@@ -300,6 +323,11 @@ impl Chat {
         self.provider.label()
     }
 
+    pub fn set_provider(&mut self, provider: Arc<dyn AiProvider>) {
+        let _ = self.update(Message::NewConversation);
+        self.provider = provider;
+    }
+
     fn set_input(&mut self, text: &str) {
         self.composer = text_editor::Content::with_text(text);
         self.composer
@@ -320,11 +348,14 @@ impl Chat {
             text: prompt.clone(),
             attachments,
         });
-        let stream = self.provider.send(AiRequest {
-            prompt,
-            attachments: inputs,
-            session: self.session.clone(),
-        });
+        let stream = with_idle_timeout(
+            self.provider.send(AiRequest {
+                prompt,
+                attachments: inputs,
+                session: self.session.clone(),
+            }),
+            IDLE_TIMEOUT,
+        );
         let (task, handle) = Task::run(stream, Message::Event)
             .chain(Task::done(Message::Finished))
             .abortable();
@@ -434,7 +465,12 @@ impl Section for Chat {
             Message::InputEdited(action) => self.composer.perform(action),
             Message::Send => return self.send(),
             Message::Event(event) => self.apply(event),
-            Message::Finished => self.running = None,
+            Message::Finished => {
+                self.running = None;
+                if matches!(self.items.last(), Some(Item::User { .. })) {
+                    self.items.push(Item::Error(NO_ANSWER.to_string()));
+                }
+            }
             Message::Cancel => {
                 if let Some(handle) = self.running.take() {
                     handle.abort();

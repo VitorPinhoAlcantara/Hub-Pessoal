@@ -25,7 +25,10 @@ use section_whatsapp::WhatsApp;
 use std::sync::Arc;
 
 use hub_mcp::McpServer;
-use panel_ia::{Chat, ClaudeCli};
+use panel_ia::{
+    AiProvider, AiProviderKind, Availability, Chat, ClaudeCli, CodexCli, GeminiCli, McpEndpoint,
+    OpenAiCompatible,
+};
 use panel_player::Player;
 
 use crate::appearance::{self, Personalization};
@@ -52,6 +55,7 @@ pub enum SettingsTab {
     #[default]
     Personalization,
     General,
+    Ai,
 }
 
 impl Tab {
@@ -130,6 +134,12 @@ pub enum Message {
     SettingsTab(SettingsTab),
     BrowserLogin(hub_core::config::BrowserLogin),
     StartWithSystem(bool),
+    AiProvider(AiProviderKind),
+    AiApiUrl(String),
+    AiApiModel(String),
+    AiApiKey(String),
+    AiCheck,
+    AiChecked(AiProviderKind, Availability),
     OpenPersonalization,
     SmokeStep(usize),
 }
@@ -169,6 +179,7 @@ pub struct App {
     pub maintenance: Maintenance,
     pub personalization: Personalization,
     pub settings_tab: SettingsTab,
+    pub ai_status: Vec<(AiProviderKind, Availability)>,
     pub wallpaper: Option<appearance::WallpaperFrame>,
     pub wallpaper_generation: u64,
     pub raw_window: Option<u64>,
@@ -295,6 +306,7 @@ impl App {
             maintenance,
             personalization,
             settings_tab: SettingsTab::Personalization,
+            ai_status: Vec::new(),
             wallpaper: None,
             wallpaper_generation: 0,
             raw_window: None,
@@ -524,18 +536,41 @@ impl App {
         }
     }
 
+    fn build_provider(&self, kind: AiProviderKind) -> Arc<dyn AiProvider> {
+        let cwd = self.ctx.paths.data_dir.clone();
+        let endpoint = self.mcp.as_ref().ok().map(|server| McpEndpoint {
+            url: server.url(),
+            token: server.token.clone(),
+        });
+        match kind {
+            AiProviderKind::Claude => {
+                let config = endpoint
+                    .as_ref()
+                    .map(|_| hub_mcp::client_config_path(&self.ctx));
+                Arc::new(ClaudeCli::new(cwd, config))
+            }
+            AiProviderKind::Codex => Arc::new(CodexCli::new(cwd, endpoint)),
+            AiProviderKind::Gemini => Arc::new(GeminiCli::new(cwd, endpoint)),
+            AiProviderKind::Api => Arc::new(OpenAiCompatible::new(self.ctx.clone(), endpoint)),
+        }
+    }
+
     fn ensure_chat(&mut self) {
         if self.chat.is_none() {
-            let config = self
-                .mcp
-                .as_ref()
-                .ok()
-                .map(|_| hub_mcp::client_config_path(&self.ctx));
-            let provider = ClaudeCli::new(self.ctx.paths.data_dir.clone(), config);
-            let mut chat = Chat::new(self.ctx.clone(), Arc::new(provider));
+            let kind = self.ctx.config().ai.provider;
+            let mut chat = Chat::new(self.ctx.clone(), self.build_provider(kind));
             chat.set_width(self.chat_width);
             self.chat = Some(chat);
         }
+    }
+
+    fn save_ai(&mut self, change: impl FnOnce(&mut hub_core::config::AiConfig)) {
+        let mut config = self.ctx.config();
+        change(&mut config.ai);
+        if let Err(error) = config.save(&self.ctx.paths.config_file()) {
+            tracing::warn!(%error, "falha ao salvar a configuração da IA");
+        }
+        *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
     fn refresh_wake(&mut self) {
@@ -670,6 +705,16 @@ impl App {
                     self.ensure_chat();
                 }
             }
+            Message::AiProvider(kind) => {
+                self.save_ai(|ai| ai.provider = kind);
+                let provider = self.build_provider(kind);
+                if let Some(chat) = &mut self.chat {
+                    chat.set_provider(provider);
+                }
+            }
+            Message::AiApiUrl(url) => self.save_ai(|ai| ai.api_url = url),
+            Message::AiApiModel(model) => self.save_ai(|ai| ai.api_model = model),
+            Message::AiApiKey(key) => self.save_ai(|ai| ai.api_key = key),
             Message::Chat(message) => {
                 if let Some(chat) = &mut self.chat {
                     return chat.update(message).map(Message::Chat);
@@ -896,7 +941,29 @@ impl App {
                 tracing::warn!(%error, "falha ao preparar o papel de parede");
                 self.wallpaper = None;
             }
-            Message::SettingsTab(tab) => self.settings_tab = tab,
+            Message::SettingsTab(tab) => {
+                self.settings_tab = tab;
+                if tab == SettingsTab::Ai {
+                    return self.update(Message::AiCheck);
+                }
+            }
+            Message::AiCheck => {
+                let ai = self.ctx.config().ai;
+                self.ai_status = AiProviderKind::ALL
+                    .into_iter()
+                    .map(|kind| (kind, Availability::Checking))
+                    .collect();
+                return Task::batch(AiProviderKind::ALL.into_iter().map(|kind| {
+                    Task::perform(panel_ia::availability::check(kind, ai.clone()), move |a| {
+                        Message::AiChecked(kind, a)
+                    })
+                }));
+            }
+            Message::AiChecked(kind, availability) => {
+                if let Some(slot) = self.ai_status.iter_mut().find(|(k, _)| *k == kind) {
+                    slot.1 = availability;
+                }
+            }
             Message::BrowserLogin(browser) => {
                 let mut config = self.ctx.config();
                 config.player.browser_login = browser;

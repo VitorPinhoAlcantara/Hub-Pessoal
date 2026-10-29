@@ -87,6 +87,12 @@ impl AiRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpEndpoint {
+    pub url: String,
+    pub token: String,
+}
+
 pub trait AiProvider: Send + Sync {
     fn label(&self) -> &'static str;
     fn send(&self, request: AiRequest) -> BoxStream<'static, AiEvent>;
@@ -269,23 +275,34 @@ impl AiProvider for ClaudeCli {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         platform::hide_console(&mut command);
-        let driver = drive(command, request.user_line(), tx)
+        let mut parser = ClaudeParser::default();
+        let driver = drive_cli(
+            command,
+            request.user_line(),
+            tx,
+            "Claude CLI",
+            "Confira se o comando claude está instalado e logado.",
+            move |line| parser.parse(line),
+        )
             .into_stream()
             .filter_map(|_| async { None });
         futures::stream::select(driver, rx).boxed()
     }
 }
 
-async fn drive(
+pub(crate) async fn drive_cli(
     mut command: tokio::process::Command,
     input: String,
     tx: mpsc::UnboundedSender<AiEvent>,
+    name: &str,
+    install: &str,
+    mut parse: impl FnMut(&str) -> Vec<AiEvent>,
 ) {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             let _ = tx.unbounded_send(AiEvent::Error(format!(
-                "Não foi possível iniciar o Claude CLI ({error}). Confira se o comando claude está instalado e logado."
+                "Não foi possível iniciar o {name} ({error}). {install}"
             )));
             return;
         }
@@ -301,12 +318,13 @@ async fn drive(
             text
         })
     });
-    let mut parser = ClaudeParser::default();
     let mut finished = false;
+    let mut any_event = false;
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            for event in parser.parse(&line) {
+            for event in parse(&line) {
+                any_event = true;
                 finished |= matches!(event, AiEvent::Done { .. });
                 let _ = tx.unbounded_send(event);
             }
@@ -319,13 +337,56 @@ async fn drive(
     };
     if !finished {
         let detail = stderr.trim();
-        let message = match (status, detail.is_empty()) {
+        let detail = match (status, detail.is_empty()) {
             (_, false) => detail.to_string(),
-            (Ok(status), true) => format!("O Claude CLI terminou sem resposta ({status})"),
+            (Ok(status), true) => format!("terminou sem resposta, {status}"),
             (Err(error), true) => error.to_string(),
+        };
+        let message = if any_event {
+            detail
+        } else {
+            format!("Não foi possível iniciar o {name} ({detail}). {install}")
         };
         let _ = tx.unbounded_send(AiEvent::Error(message));
     }
+}
+
+pub(crate) async fn stage_attachments(
+    dir: &std::path::Path,
+    attachments: &[AttachmentInput],
+) -> (Vec<PathBuf>, String) {
+    use base64::Engine;
+    let _ = tokio::fs::remove_dir_all(dir).await;
+    let mut images = Vec::new();
+    let mut inline = String::new();
+    for (index, attachment) in attachments.iter().enumerate() {
+        match attachment {
+            AttachmentInput::Image { media_type, data } => {
+                let extension = media_type.rsplit('/').next().unwrap_or("png");
+                let extension = if extension == "jpeg" {
+                    "jpg"
+                } else {
+                    extension
+                };
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+                    continue;
+                };
+                let path = dir.join(format!("imagem{index}.{extension}"));
+                if tokio::fs::create_dir_all(dir).await.is_ok()
+                    && tokio::fs::write(&path, bytes).await.is_ok()
+                {
+                    images.push(path);
+                }
+            }
+            AttachmentInput::Pdf { .. } => {
+                inline.push_str("[Um PDF foi anexado, mas este provedor não suporta PDF.]\n\n");
+            }
+            AttachmentInput::Text { name, content } => {
+                inline.push_str(&format!("Arquivo anexado: {name}\n\n{content}\n\n"));
+            }
+        }
+    }
+    (images, inline)
 }
 
 #[cfg(test)]

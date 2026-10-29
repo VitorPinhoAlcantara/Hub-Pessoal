@@ -202,6 +202,17 @@ fn spawn_tray_thread(
     })
 }
 
+pub fn npm_cli(name: &str) -> CommandSpec {
+    #[cfg(windows)]
+    {
+        CommandSpec::new("cmd").arg("/C").arg(format!("{name}.cmd"))
+    }
+    #[cfg(not(windows))]
+    {
+        CommandSpec::new(name)
+    }
+}
+
 pub fn hide_console(command: &mut tokio::process::Command) {
     #[cfg(windows)]
     {
