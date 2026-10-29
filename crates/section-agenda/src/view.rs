@@ -238,11 +238,11 @@ fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element
     let today = agenda.today();
     let color = kind_color(card.kind);
     let dragging = agenda.drag().is_some_and(|d| d.active && d.card == card.id);
-    let faded = card.done || card.projected || dragging;
+    let faded = card.done || card.projected || card.missed || dragging;
     let leading: Element<'_, Message> = match card.id {
         CardId::Task(id) => checkbox(card.done)
             .on_toggle(move |done| Message::TaskToggled(id, done))
-            .size(15)
+            .size(20)
             .style(style::check)
             .into(),
         CardId::Reminder(_) => icon(
@@ -267,8 +267,10 @@ fn card_view<'a>(agenda: &'a Agenda, card: &'a Card, show_date: bool) -> Element
         })
         .color(color),
     );
-    if card.is_overdue(today) {
-        meta = meta.push(small("atrasada").color(danger()));
+    if card.missed {
+        meta = meta.push(small("perdido").color(danger()));
+    } else if card.is_overdue(today) {
+        meta = meta.push(small("atrasado").color(danger()));
     }
     if card.high_priority {
         meta = meta.push(icon(Icon::Flag, ICON_SIZE - 7.0, danger()));
@@ -497,7 +499,25 @@ fn calendar_cell<'a>(
             .into()
     };
     let visible: Vec<&Card> = day.cards.iter().filter(|c| agenda.shows(c.kind)).collect();
-    let mut items = Column::new().spacing(3).push(number);
+    let lost = |c: &Card| c.missed || c.is_overdue(today);
+    let lost_count = day.cards.iter().filter(|c| lost(c)).count();
+    let header: Element<'_, Message> = if lost_count > 0 {
+        row![
+            number,
+            space().width(Length::Fill),
+            small(if lost_count == 1 {
+                "1 perdido".to_string()
+            } else {
+                format!("{lost_count} perdidos")
+            })
+            .color(danger()),
+        ]
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        number
+    };
+    let mut items = Column::new().spacing(3).push(header);
     for card in visible.iter().take(CALENDAR_ITEMS) {
         let label = match card.time {
             Some(time) => format!("{} {}", time.format("%H:%M"), card.title),
@@ -511,7 +531,9 @@ fn calendar_cell<'a>(
                     .style(style::dot(kind_color(card.kind))),
                 text(label)
                     .size(FONT_SIZE_SMALL)
-                    .color(if card.done {
+                    .color(if lost(card) {
+                        danger()
+                    } else if card.done {
                         text_secondary()
                     } else {
                         text_primary()

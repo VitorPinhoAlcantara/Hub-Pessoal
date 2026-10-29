@@ -1268,7 +1268,24 @@ impl HubTools {
         Ok(format!("{title} excluído da agenda"))
     }
 
-    #[tool(description = "Reabre uma tarefa concluída (desfaz a conclusão)")]
+    #[tool(
+        description = "Marca um compromisso atrasado como perdido: sai das pendências e fica marcado no calendário"
+    )]
+    async fn agenda_marcar_perdido(
+        &self,
+        Parameters(request): Parameters<IdRequest>,
+    ) -> Result<String, String> {
+        agenda::set_task_missed(
+            self.ctx.db().conn(),
+            request.id,
+            Some(self.ctx.clock.now()),
+        )
+        .map_err(err)?;
+        self.agenda_changed();
+        Ok(format!("Tarefa {} marcada como perdida", request.id))
+    }
+
+    #[tool(description = "Reabre uma tarefa concluída ou perdida")]
     async fn agenda_reabrir(
         &self,
         Parameters(request): Parameters<IdRequest>,

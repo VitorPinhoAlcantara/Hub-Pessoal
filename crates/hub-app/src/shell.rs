@@ -173,7 +173,7 @@ fn toolbar(app: &App) -> Element<'_, Message> {
     ]
     .align_y(Alignment::Center)
     .height(TOOLBAR_HEIGHT);
-    mouse_area(bar)
+    mouse_area(container(bar).style(style::chrome))
         .on_press(Message::DragWindow)
         .on_double_click(Message::ToggleMaximize)
         .into()
@@ -208,6 +208,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
     )
     .width(SIDEBAR_WIDTH)
     .height(Length::Fill)
+    .style(style::chrome)
     .into()
 }
 

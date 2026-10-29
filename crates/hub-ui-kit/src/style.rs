@@ -33,6 +33,13 @@ pub fn base(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn chrome(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(bg_chrome())),
+        ..container::Style::default()
+    }
+}
+
 pub fn panel(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(bg_panel())),

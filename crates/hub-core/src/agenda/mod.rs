@@ -58,6 +58,7 @@ pub struct Task {
     pub completed_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub routine_id: Option<i64>,
+    pub missed_at: Option<NaiveDateTime>,
 }
 
 impl Task {
@@ -134,7 +135,7 @@ pub struct TodayView {
 }
 
 const TASK_COLUMNS: &str =
-    "id, titulo, notas, data, hora, prioridade, concluida_em, criada_em, rotina_id";
+    "id, titulo, notas, data, hora, prioridade, concluida_em, criada_em, rotina_id, perdida_em";
 
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
     let priority: String = row.get(5)?;
@@ -148,6 +149,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         completed_at: row.get(6)?,
         created_at: row.get(7)?,
         routine_id: row.get(8)?,
+        missed_at: row.get(9)?,
     })
 }
 
@@ -252,7 +254,21 @@ pub fn complete_task(conn: &Connection, id: i64, now: NaiveDateTime) -> Result<(
 }
 
 pub fn uncomplete_task(conn: &Connection, id: i64) -> Result<()> {
-    let changed = conn.execute("UPDATE tarefas SET concluida_em = NULL WHERE id = ?1", [id])?;
+    let changed = conn.execute(
+        "UPDATE tarefas SET concluida_em = NULL, perdida_em = NULL WHERE id = ?1",
+        [id],
+    )?;
+    if changed == 0 {
+        return Err(AgendaError::NotFound(id));
+    }
+    Ok(())
+}
+
+pub fn set_task_missed(conn: &Connection, id: i64, at: Option<NaiveDateTime>) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE tarefas SET perdida_em = ?2 WHERE id = ?1",
+        params![id, at],
+    )?;
     if changed == 0 {
         return Err(AgendaError::NotFound(id));
     }
@@ -273,7 +289,9 @@ pub fn today_view(conn: &Connection, today: NaiveDate) -> Result<TodayView> {
     Ok(TodayView {
         overdue: query_tasks(
             conn,
-            &format!("concluida_em IS NULL AND data < ?1 {OPEN_ORDER}"),
+            &format!(
+                "concluida_em IS NULL AND perdida_em IS NULL AND rotina_id IS NULL AND data < ?1 {OPEN_ORDER}"
+            ),
             [today],
         )?,
         today: query_tasks(
@@ -298,7 +316,7 @@ pub fn tasks_between(
     let completed = if include_completed {
         ""
     } else {
-        "AND concluida_em IS NULL"
+        "AND concluida_em IS NULL AND perdida_em IS NULL"
     };
     query_tasks(
         conn,
@@ -332,7 +350,7 @@ pub fn upcoming(
 pub fn pending_before(conn: &Connection, before: NaiveDate) -> Result<Vec<Task>> {
     query_tasks(
         conn,
-        "concluida_em IS NULL AND (data IS NULL OR data < ?1)
+        "concluida_em IS NULL AND perdida_em IS NULL AND rotina_id IS NULL AND (data IS NULL OR data < ?1)
          ORDER BY data IS NULL, data, hora IS NULL, hora, id",
         [before],
     )

@@ -154,12 +154,8 @@ fn list(section: &WhatsApp) -> Element<'_, Message> {
     };
     container(
         column![
-            row![
-                title("WhatsApp"),
-                space().width(Length::Fill),
-                status_line(section)
-            ]
-            .align_y(Alignment::Center),
+            title("WhatsApp"),
+            status_line(section),
             text_field("Buscar conversa", section.query(), Message::QueryChanged),
             container(body).height(Length::Fill),
             footer,

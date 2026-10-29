@@ -12,6 +12,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use hub_core::clock::SystemClock;
 use hub_core::config::Renderer;
+use hub_core::events::{EventBus, HubEvent};
+use hub_core::platform::ipc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use hub_core::{Config, Database, HubContext, HubPaths};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -54,8 +57,65 @@ fn configure_renderer(renderer: Renderer, translucent: bool) {
     }
 }
 
+fn instance_path() -> String {
+    ipc::ipc_path(&format!(
+        "{}-instancia",
+        hub_core::channel::Channel::current().dir_name()
+    ))
+}
+
+fn notify_running_instance(path: &str, show: bool) -> bool {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime.block_on(async {
+        let Ok(mut stream) = ipc::connect(path).await else {
+            return false;
+        };
+        let line: &[u8] = if show { b"abrir
+" } else { b"
+" };
+        let _ = stream.write_all(line).await;
+        true
+    })
+}
+
+fn listen_for_instances(path: String, events: EventBus) {
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        runtime.block_on(async move {
+            let mut listener = match ipc::IpcListener::bind(&path) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    tracing::warn!(%error, "sem canal de instância única");
+                    return;
+                }
+            };
+            while let Ok(stream) = listener.accept().await {
+                let mut line = String::new();
+                let _ = BufReader::new(stream).read_line(&mut line).await;
+                if line.trim() == "abrir" {
+                    events.publish(HubEvent::ShowWindow);
+                }
+            }
+        });
+    });
+}
+
 fn main() -> anyhow::Result<()> {
     let options = parse_options();
+    let instance = instance_path();
+    if !options.smoke_test && notify_running_instance(&instance, !options.start_hidden) {
+        return Ok(());
+    }
     let paths = HubPaths::resolve().context("resolvendo as pastas do hub")?;
     paths.ensure_dirs().context("criando as pastas do hub")?;
     if hub_core::backup::has_pending_restore(&paths) {
@@ -88,6 +148,9 @@ fn main() -> anyhow::Result<()> {
         hub_core::platform::native(),
         Arc::new(SystemClock),
     );
+    if !options.smoke_test {
+        listen_for_instances(instance, ctx.events.clone());
+    }
     tracing::info!(?options, "hub iniciando");
     app::run(ctx, options).context("executando a interface")?;
     tracing::info!("hub encerrado");

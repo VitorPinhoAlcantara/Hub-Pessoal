@@ -40,6 +40,7 @@ pub struct Card {
     pub done: bool,
     pub high_priority: bool,
     pub projected: bool,
+    pub missed: bool,
 }
 
 impl Card {
@@ -56,6 +57,7 @@ impl Card {
             done: false,
             high_priority: false,
             projected: true,
+            missed: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl Card {
             done: task.is_completed(),
             high_priority: task.priority == Priority::High,
             projected: false,
+            missed: task.missed_at.is_some(),
         }
     }
 
@@ -91,11 +94,15 @@ impl Card {
             done: reminder.fired_at.is_some(),
             high_priority: false,
             projected: false,
+            missed: false,
         }
     }
 
     pub fn is_overdue(&self, today: NaiveDate) -> bool {
-        !self.done && self.kind != CardKind::Reminder && self.date.is_some_and(|date| date < today)
+        !self.done
+            && !self.missed
+            && self.kind == CardKind::Appointment
+            && self.date.is_some_and(|date| date < today)
     }
 }
 
@@ -252,6 +259,7 @@ mod tests {
             completed_at: None,
             created_at: NaiveDateTime::default(),
             routine_id: routine.then_some(1),
+            missed_at: None,
         }
     }
 
@@ -333,5 +341,10 @@ mod tests {
         let card = Card::from_task(&task(1, "2026-10-20", None, false));
         assert!(card.is_overdue(d("2026-10-21")));
         assert!(!card.is_overdue(d("2026-10-20")));
+        let routine = Card::from_task(&task(2, "2026-10-20", None, true));
+        assert!(!routine.is_overdue(d("2026-10-21")));
+        let mut missed = task(3, "2026-10-20", None, false);
+        missed.missed_at = Some(NaiveDateTime::default());
+        assert!(!Card::from_task(&missed).is_overdue(d("2026-10-21")));
     }
 }

@@ -110,6 +110,13 @@ pub fn bg_base() -> Color {
     }
 }
 
+pub fn bg_chrome() -> Color {
+    match translucency() {
+        Some(dim) => alpha(palette().background, (0.35 + dim * 0.5).min(0.8)),
+        None => Color::TRANSPARENT,
+    }
+}
+
 pub fn bg_panel() -> Color {
     surface()
 }

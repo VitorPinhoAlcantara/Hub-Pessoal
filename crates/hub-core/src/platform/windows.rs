@@ -132,6 +132,34 @@ pub(super) fn begin_window_drag(raw_window: u64, drag: super::WindowDrag) {
     }
 }
 
+pub(super) fn notification_app_id() -> &'static str {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
+    static REGISTERED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    REGISTERED.get_or_init(|| {
+        let id = match crate::channel::Channel::current() {
+            crate::channel::Channel::Dev => "VitorAlcantara.HubPessoal.Dev",
+            crate::channel::Channel::Release => "VitorAlcantara.HubPessoal",
+        };
+        let key = wide(OsStr::new(&format!(r"Software\Classes\AppUserModelId\{id}")));
+        let name = wide(OsStr::new("DisplayName"));
+        let value = wide(OsStr::new(crate::channel::app_name()));
+        let status = unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                REG_SZ,
+                value.as_ptr().cast(),
+                (value.len() * 2) as u32,
+            )
+        };
+        if status != 0 {
+            tracing::warn!(status, "falha ao registrar o app nas notificações do Windows");
+        }
+        id
+    })
+}
+
 pub(super) fn transparency_effects_enabled() -> bool {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
     let key = wide(OsStr::new(

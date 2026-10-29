@@ -185,7 +185,15 @@ impl Notes {
             return;
         }
         match self.query_note(id) {
-            Some(note) => self.editing = Some(Self::editing_from(&note)),
+            Some(note) => {
+                let unchanged = self
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.title == note.title && e.content.text() == note.body);
+                if !unchanged {
+                    self.editing = Some(Self::editing_from(&note));
+                }
+            }
             None => self.editing = None,
         }
     }

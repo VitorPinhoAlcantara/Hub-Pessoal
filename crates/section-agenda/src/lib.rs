@@ -58,6 +58,7 @@ pub enum Message {
     DeleteConfirmed,
     ModalClosed,
     TaskToggled(i64, bool),
+    TaskMissed(i64, bool),
     FilterToggled(CardKind),
     ModifiersChanged(Modifiers),
     ShiftDays(i64),
@@ -398,6 +399,17 @@ impl Agenda {
             items.push(
                 MenuItem::new(label, Message::TaskToggled(task, !card.done)).icon(Icon::Check),
             );
+            if card.missed {
+                items.push(
+                    MenuItem::new("Desmarcar perdido", Message::TaskMissed(task, false))
+                        .icon(Icon::Undo),
+                );
+            } else if card.is_overdue(self.today) {
+                items.push(
+                    MenuItem::new("Marcar como perdido", Message::TaskMissed(task, true))
+                        .icon(Icon::Close),
+                );
+            }
         }
         if card.can_move()
             && let Some(date) = card.date
@@ -550,6 +562,11 @@ impl Section for Agenda {
                         agenda::uncomplete_task(ctx.db().conn(), id)
                     }
                 });
+            }
+            Message::TaskMissed(id, missed) => {
+                self.menu = None;
+                let at = missed.then(|| self.ctx.clock.now());
+                self.apply(|ctx| agenda::set_task_missed(ctx.db().conn(), id, at));
             }
             Message::FilterToggled(kind) => {
                 if self.modifiers.shift() {
