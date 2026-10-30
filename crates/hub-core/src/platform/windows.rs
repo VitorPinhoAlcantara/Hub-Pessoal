@@ -174,7 +174,9 @@ pub(super) fn notification_app_id() -> &'static str {
             crate::channel::Channel::Dev => "VitorAlcantara.HubPessoal.Dev",
             crate::channel::Channel::Release => "VitorAlcantara.HubPessoal",
         };
-        let key = wide(OsStr::new(&format!(r"Software\Classes\AppUserModelId\{id}")));
+        let key = wide(OsStr::new(&format!(
+            r"Software\Classes\AppUserModelId\{id}"
+        )));
         let name = wide(OsStr::new("DisplayName"));
         let value = wide(OsStr::new(crate::channel::app_name()));
         let status = unsafe {
@@ -188,19 +190,20 @@ pub(super) fn notification_app_id() -> &'static str {
             )
         };
         if status != 0 {
-            tracing::warn!(status, "falha ao registrar o app nas notificações do Windows");
+            tracing::warn!(
+                status,
+                "falha ao registrar o app nas notificações do Windows"
+            );
         }
         id
     })
 }
 
-pub(super) fn transparency_effects_enabled() -> bool {
+fn read_dword(key: &str, name: &str) -> Option<u32> {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
-    let key = wide(OsStr::new(
-        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-    ));
-    let name = wide(OsStr::new("EnableTransparency"));
-    let mut value: u32 = 1;
+    let key = wide(OsStr::new(key));
+    let name = wide(OsStr::new(name));
+    let mut value: u32 = 0;
     let mut size = std::mem::size_of::<u32>() as u32;
     let status = unsafe {
         RegGetValueW(
@@ -213,7 +216,113 @@ pub(super) fn transparency_effects_enabled() -> bool {
             &mut size,
         )
     };
-    status != 0 || value != 0
+    (status == 0).then_some(value)
+}
+
+fn write_dword(key: &str, name: &str, value: Option<u32>) {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, REG_DWORD, RegDeleteKeyValueW, RegSetKeyValueW,
+    };
+    let key = wide(OsStr::new(key));
+    let name = wide(OsStr::new(name));
+    let status = match value {
+        Some(value) => unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                REG_DWORD,
+                (&value as *const u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+            )
+        },
+        None => unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) },
+    };
+    if status != 0 {
+        tracing::warn!(status, "falha ao gravar no registro");
+    }
+}
+
+pub(super) fn transparency_effects_enabled() -> bool {
+    read_dword(
+        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        "EnableTransparency",
+    ) != Some(0)
+}
+
+const GAME_BAR_KEY: &str = r"Software\Microsoft\GameBar";
+const GAME_MODE_VALUE: &str = "AutoGameModeEnabled";
+const QUIET_HOURS_STATE: u64 = 0x0D83_063E_A3BF_1C75;
+const QUIET_HOURS_ON: u32 = 1;
+
+#[link(name = "ntdll", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn NtQueryWnfStateData(
+        name: *const u64,
+        type_id: *const std::ffi::c_void,
+        scope: *const std::ffi::c_void,
+        stamp: *mut u32,
+        buffer: *mut std::ffi::c_void,
+        size: *mut u32,
+    ) -> i32;
+    fn NtUpdateWnfStateData(
+        name: *const u64,
+        buffer: *const std::ffi::c_void,
+        length: u32,
+        type_id: *const std::ffi::c_void,
+        scope: *const std::ffi::c_void,
+        matching_stamp: u32,
+        check_stamp: u32,
+    ) -> i32;
+}
+
+fn quiet_hours() -> Option<u32> {
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let mut stamp = 0;
+    let status = unsafe {
+        NtQueryWnfStateData(
+            &QUIET_HOURS_STATE,
+            std::ptr::null(),
+            std::ptr::null(),
+            &mut stamp,
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    (status == 0 && size == 4).then_some(value)
+}
+
+fn set_quiet_hours(value: u32) {
+    let status = unsafe {
+        NtUpdateWnfStateData(
+            &QUIET_HOURS_STATE,
+            (&value as *const u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0,
+        )
+    };
+    if status != 0 {
+        tracing::warn!(status, "falha ao mudar o não perturbe do Windows");
+    }
+}
+
+pub(super) fn enter_game_mode() -> super::FocusState {
+    let previous = super::FocusState {
+        game_mode: read_dword(GAME_BAR_KEY, GAME_MODE_VALUE),
+        quiet_hours: quiet_hours(),
+    };
+    write_dword(GAME_BAR_KEY, GAME_MODE_VALUE, Some(1));
+    set_quiet_hours(QUIET_HOURS_ON);
+    previous
+}
+
+pub(super) fn leave_game_mode(previous: super::FocusState) {
+    write_dword(GAME_BAR_KEY, GAME_MODE_VALUE, previous.game_mode);
+    set_quiet_hours(previous.quiet_hours.unwrap_or(0));
 }
 
 pub(super) fn apply_taskbar_icon(raw_window: u64) {

@@ -1,3 +1,4 @@
+pub mod charts;
 pub mod color_picker;
 pub mod cursor;
 pub mod dialog;
@@ -8,6 +9,7 @@ pub mod style;
 pub mod tokens;
 pub mod widgets;
 
+pub use charts::{area_chart, ring_gauge};
 pub use iced;
 pub use icon::Icon;
 pub use menu::{ContextMenu, MenuItem};

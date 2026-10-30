@@ -210,6 +210,7 @@ fn navigate_does_not_change_state() {
         Destination::Shortcuts,
         Destination::Notes(Some(3)),
         Destination::Notes(None),
+        Destination::Performance,
     ] {
         let _ = home.update(Message::Navigate(destination));
     }
@@ -224,4 +225,14 @@ fn tick_advances_clock() {
     assert_eq!(home.now(), home.ctx.clock.now());
     let _ = home.update(Message::Tick);
     assert_eq!(home.now(), home.ctx.clock.now());
+}
+
+#[test]
+fn tick_samples_performance_lazily() {
+    let (mut home, _, _, _temp) = setup();
+    assert!(home.snapshot().is_none());
+    let _ = home.view();
+    let _ = home.update(Message::Tick);
+    assert!(home.snapshot().unwrap().ram_total > 0);
+    let _ = home.view();
 }

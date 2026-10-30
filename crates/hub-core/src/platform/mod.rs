@@ -1,6 +1,7 @@
 pub mod clipboard;
 pub mod desktop_entry;
 mod fake;
+pub mod gpu;
 pub mod ipc;
 mod notify;
 pub mod script;
@@ -224,6 +225,13 @@ pub fn hide_console(command: &mut tokio::process::Command) {
     }
 }
 
+pub fn spawn_detached(program: &Path, args: &[&str]) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    hide_console_std(&mut command);
+    command.spawn().map(|_| ())
+}
+
 pub fn hide_console_std(command: &mut std::process::Command) {
     #[cfg(windows)]
     {
@@ -366,6 +374,30 @@ pub fn set_autostart(enabled: bool) -> Result<(), PlatformError> {
     {
         linux::set_autostart(&exe, enabled)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FocusState {
+    pub game_mode: Option<u32>,
+    pub quiet_hours: Option<u32>,
+}
+
+pub fn enter_game_mode() -> FocusState {
+    #[cfg(windows)]
+    {
+        windows::enter_game_mode()
+    }
+    #[cfg(not(windows))]
+    {
+        FocusState::default()
+    }
+}
+
+pub fn leave_game_mode(previous: FocusState) {
+    #[cfg(windows)]
+    windows::leave_game_mode(previous);
+    #[cfg(not(windows))]
+    let _ = previous;
 }
 
 pub fn transparency_effects_enabled() -> bool {

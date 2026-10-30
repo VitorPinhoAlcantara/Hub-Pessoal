@@ -432,6 +432,20 @@ pub struct TerminalRequest {
     pub tempo_limite_segundos: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LedColorRequest {
+    #[schemars(description = "Nome do dispositivo (veja leds_listar) ou todos")]
+    pub dispositivo: String,
+    #[schemars(description = "Cor em hexadecimal, por exemplo #FF8800")]
+    pub cor: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LedProfileRequest {
+    #[schemars(description = "Nome do perfil salvo no OpenRGB (veja leds_listar)")]
+    pub perfil: String,
+}
+
 const REFUSED: &str = "o usuário recusou ou não respondeu a tempo";
 const HISTORY_OUTPUT: usize = 2000;
 
@@ -2065,7 +2079,15 @@ impl HubTools {
             return Err(REFUSED.to_string());
         }
         let spec = terminal::terminal_command(os, &command, pwsh);
-        let output = terminal::run_terminal(&spec, &cwd, timeout)
+        let mcp = self.ctx.config().mcp;
+        let env = [
+            (
+                crate::api::URL_ENV,
+                format!("http://127.0.0.1:{}{}", mcp.port, crate::api::API_PATH),
+            ),
+            (crate::api::TOKEN_ENV, mcp.token),
+        ];
+        let output = terminal::run_terminal(&spec, &cwd, timeout, &env)
             .await
             .map_err(|e| format!("não foi possível iniciar o terminal: {e}"))?;
         Ok(text(&json!({
@@ -2077,6 +2099,59 @@ impl HubTools {
             "stderr_cortado": output.stderr_truncated,
             "pasta": cwd.display().to_string(),
         })))
+    }
+
+    #[tool(
+        description = "Lista os dispositivos de LED do OpenRGB (nome, tipo, quantidade de LEDs, efeitos) e os perfis salvos. Exige o OpenRGB aberto com o servidor SDK ativo"
+    )]
+    async fn leds_listar(&self) -> Result<String, String> {
+        let port = self.ctx.config().leds.port;
+        let snapshot = hub_core::leds::snapshot(port).await.map_err(err)?;
+        let devices: Vec<serde_json::Value> = snapshot
+            .devices
+            .iter()
+            .map(|device| {
+                json!({
+                    "nome": device.name,
+                    "tipo": device.kind.label(),
+                    "leds": device.led_count,
+                    "efeito_ativo": device.active().map(|m| m.name.clone()),
+                    "efeitos": device.modes.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Ok(text(&json!({ "dispositivos": devices, "perfis": snapshot.profiles })))
+    }
+
+    #[tool(description = "Define uma cor sólida em um dispositivo de LED (pelo nome) ou em todos (use todos)")]
+    async fn leds_cor(
+        &self,
+        Parameters(request): Parameters<LedColorRequest>,
+    ) -> Result<String, String> {
+        let color = hub_core::leds::parse_color(&request.cor).ok_or("cor inválida, use #RRGGBB")?;
+        let name = request.dispositivo.trim();
+        let target = if name.eq_ignore_ascii_case("todos") {
+            hub_core::leds::Target::All
+        } else {
+            hub_core::leds::Target::Name(name.to_string())
+        };
+        let port = self.ctx.config().leds.port;
+        let count = hub_core::leds::paint(port, target, color)
+            .await
+            .map_err(err)?;
+        Ok(text(&json!({ "dispositivos_alterados": count })))
+    }
+
+    #[tool(description = "Aplica um perfil salvo do OpenRGB a todos os dispositivos")]
+    async fn leds_perfil(
+        &self,
+        Parameters(request): Parameters<LedProfileRequest>,
+    ) -> Result<String, String> {
+        let port = self.ctx.config().leds.port;
+        hub_core::leds::apply_profile(port, request.perfil.trim())
+            .await
+            .map_err(err)?;
+        Ok(text(&json!({ "perfil": request.perfil })))
     }
 }
 

@@ -72,6 +72,8 @@ fn active_menu(app: &App) -> Option<ContextMenu<Message>> {
             .and_then(|s| s.context_menu())
             .map(|m| m.map(Message::Notes)),
         Tab::Home => None,
+        Tab::Performance => None,
+        Tab::Peripherals => None,
         Tab::WhatsApp => app
             .whatsapp
             .as_ref()
@@ -157,6 +159,12 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         space().width(Length::Fill),
         row![
             toggle(
+                Icon::Game,
+                "Modo jogo: liga o modo de jogo e o não perturbe do Windows e silencia o hub",
+                app.game_mode.is_some(),
+                Message::ToggleGameMode
+            ),
+            toggle(
                 Icon::Player,
                 "Música",
                 app.player_open,
@@ -186,6 +194,8 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             Tab::Scripts => Icon::Scripts,
             Tab::Shortcuts => Icon::Shortcuts,
             Tab::Notes => Icon::Notes,
+            Tab::Performance => Icon::Performance,
+            Tab::Peripherals => Icon::Peripherals,
             Tab::Home => Icon::Home,
             Tab::WhatsApp => Icon::WhatsApp,
             Tab::Settings => Icon::Settings,
@@ -228,6 +238,14 @@ fn main_area(app: &App) -> Element<'_, Message> {
         },
         Tab::Notes => match &app.notes {
             Some(notes) => notes.view().map(Message::Notes),
+            None => panel(muted("Carregando")).into(),
+        },
+        Tab::Performance => match &app.performance {
+            Some(performance) => performance.view().map(Message::Performance),
+            None => panel(muted("Carregando")).into(),
+        },
+        Tab::Peripherals => match &app.peripherals {
+            Some(peripherals) => peripherals.view().map(Message::Peripherals),
             None => panel(muted("Carregando")).into(),
         },
         Tab::Home => match &app.home {

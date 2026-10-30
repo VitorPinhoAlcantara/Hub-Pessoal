@@ -9,7 +9,7 @@ use hub_core::platform::{self, CommandSpec};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-pub const SYSTEM_PROMPT: &str = "Você é a assistente do hub pessoal do usuário, um app de desktop. Responda em português do Brasil, de forma curta. Use as ferramentas do hub (prefixo mcp__hub) para agenda, rotinas, lembretes, scripts, atalhos, player e WhatsApp. Para tarefas no computador existe a ferramenta terminal_executar, que roda um comando no PowerShell (Windows) ou sh (Linux); cada comando pede confirmação ao usuário no hub, então prefira um comando por vez e explique o que ele faz. Datas e horas são locais.";
+pub const SYSTEM_PROMPT: &str = "Você é a assistente do hub pessoal do usuário, um app de desktop. Responda em português do Brasil, de forma curta. Use as ferramentas do hub (prefixo mcp__hub) para agenda, rotinas, lembretes, scripts, atalhos, player e WhatsApp. Para tarefas no computador existe a ferramenta terminal_executar, que roda um comando no PowerShell (Windows) ou sh (Linux); cada comando pede confirmação ao usuário no hub, então prefira um comando por vez e explique o que ele faz. Datas e horas são locais. Para tarefas em lote (muitas ações seguidas ou listas grandes), prefira um único terminal_executar com um script que chama a API HTTP do hub: as variáveis HUB_API e HUB_TOKEN já existem nesse terminal, e GET $env:HUB_API com o cabeçalho Authorization: Bearer $env:HUB_TOKEN devolve a documentação com todas as ferramentas.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiEvent {

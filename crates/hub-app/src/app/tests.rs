@@ -129,6 +129,7 @@ fn view_builds_for_every_tab_and_panel() {
         Tab::Scripts,
         Tab::Shortcuts,
         Tab::WhatsApp,
+        Tab::Peripherals,
         Tab::Settings,
     ] {
         let _ = app.update(Message::TabSelected(tab));

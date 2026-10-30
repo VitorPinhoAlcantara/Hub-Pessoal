@@ -141,6 +141,29 @@ async fn wrong_token_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn led_tools_report_missing_openrgb_and_bad_color() {
+    let fixture = fixture();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut config = fixture.ctx.config();
+    config.leds.port = port;
+    *fixture.ctx.config.lock().unwrap() = config;
+    let client = client(&fixture.server, &fixture.server.token).await;
+    let listed = call(&client, "leds_listar", json!({})).await;
+    assert!(is_error(&listed));
+    assert!(result_text(&listed).contains("OpenRGB"));
+    let bad = call(
+        &client,
+        "leds_cor",
+        json!({ "dispositivo": "todos", "cor": "azul" }),
+    )
+    .await;
+    assert!(result_text(&bad).contains("cor inválida"));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn lists_all_tools() {
     let fixture = fixture();
     let client = client(&fixture.server, &fixture.server.token).await;
@@ -196,6 +219,9 @@ async fn lists_all_tools() {
         "whatsapp_conversas",
         "whatsapp_apelido",
         "terminal_executar",
+        "leds_listar",
+        "leds_cor",
+        "leds_perfil",
         "atalhos_mover",
         "atalhos_grupo_mover",
         "atalhos_grupo_recolher",
@@ -1252,4 +1278,33 @@ async fn approved_confirmation_deletes_note() {
             .is_none()
     );
     client.cancel().await.unwrap();
+}
+
+async fn http(server: &McpServer, method: &str, path: &str, token: &str, body: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    response
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn api_exposes_tools_as_endpoints() {
+    let fixture = fixture();
+    let token = fixture.server.token.clone();
+    let docs = http(&fixture.server, "GET", "/api", &token, "").await;
+    assert!(docs.starts_with("HTTP/1.1 200"), "{docs}");
+    assert!(docs.contains("agenda_listar"));
+    let listed = http(&fixture.server, "POST", "/api/agenda_listar", &token, "{}").await;
+    assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+    assert!(listed.contains("\"resultado\""));
+    let unknown = http(&fixture.server, "POST", "/api/nao_existe", &token, "{}").await;
+    assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
+    let denied = http(&fixture.server, "POST", "/api/agenda_listar", "errado", "{}").await;
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
 }

@@ -51,6 +51,27 @@ impl Default for GeneralConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct LedsConfig {
+    #[serde(rename = "porta")]
+    pub port: u16,
+    #[serde(rename = "perfil_modo_jogo")]
+    pub game_profile: String,
+    #[serde(rename = "perfil_normal")]
+    pub normal_profile: String,
+}
+
+impl Default for LedsConfig {
+    fn default() -> Self {
+        Self {
+            port: 6742,
+            game_profile: String::new(),
+            normal_profile: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct McpConfig {
     #[serde(rename = "porta")]
     pub port: u16,
@@ -319,6 +340,7 @@ pub struct Config {
     pub player: PlayerConfig,
     #[serde(rename = "ia")]
     pub ai: AiConfig,
+    pub leds: LedsConfig,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +500,24 @@ mod tests {
         assert_eq!(config.general.renderer, Renderer::Software);
         assert!(!config.general.start_with_system);
         assert_eq!(config.mcp, McpConfig::default());
+    }
+
+    #[test]
+    fn leds_defaults_and_overrides() {
+        let config = Config::default();
+        assert_eq!(config.leds.port, 6742);
+        assert!(config.leds.game_profile.is_empty());
+        let parsed = Config::parse(
+            Path::new("x"),
+            "[leds]
+porta = 7000
+perfil_modo_jogo = \"Jogo\"
+",
+        )
+        .unwrap();
+        assert_eq!(parsed.leds.port, 7000);
+        assert_eq!(parsed.leds.game_profile, "Jogo");
+        assert!(parsed.leds.normal_profile.is_empty());
     }
 
     #[test]

@@ -19,6 +19,8 @@ icons! {
     Home => "home",
     Agenda => "agenda",
     Notes => "notes",
+    Performance => "desempenho",
+    Peripherals => "perifericos",
     Lock => "lock",
     Unlock => "unlock",
     Scripts => "scripts",
@@ -70,6 +72,7 @@ icons! {
     Image => "image",
     External => "external",
     Terminal => "terminal",
+    Game => "game",
 }
 
 static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| {

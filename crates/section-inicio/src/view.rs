@@ -1,4 +1,5 @@
 use hub_core::chrono::Timelike;
+use hub_core::performance::percent_of;
 use hub_core::shortcuts::{Shortcut, ShortcutKind};
 use hub_ui_kit::iced::widget::image::Handle;
 use hub_ui_kit::iced::widget::scrollable::{Direction, Scrollbar};
@@ -8,13 +9,16 @@ use hub_ui_kit::iced::widget::{
 use hub_ui_kit::iced::{Alignment, Color, Element, Length, Padding, mouse};
 use hub_ui_kit::tokens::*;
 use hub_ui_kit::widgets::*;
-use hub_ui_kit::{Icon, font, style};
+use hub_ui_kit::{Icon, font, ring_gauge, style};
 
 use crate::{AgendaItem, Destination, Home, ItemKind, Message, NOTE_LINES, format_date};
 
 const CLOCK_SIZE: f32 = 64.0;
 const SECONDS_SIZE: f32 = 24.0;
 const CARD_HEIGHT: f32 = 288.0;
+const TOP_HEIGHT: f32 = 148.0;
+const PERFORMANCE_WIDTH: f32 = 360.0;
+const RING_SIZE: f32 = 84.0;
 const TILE_WIDTH: f32 = 104.0;
 const TILE_HEIGHT: f32 = 98.0;
 const TILE_ICON: f32 = 40.0;
@@ -93,7 +97,11 @@ fn clickable<'a>(
 }
 
 pub fn view(section: &Home) -> Element<'_, Message> {
-    let mut content = Column::new().spacing(GAP_PANEL).push(clock_card(section));
+    let mut content = Column::new().spacing(GAP_PANEL).push(
+        row![clock_card(section), performance_card(section)]
+            .spacing(GAP_PANEL)
+            .width(Length::Fill),
+    );
     if let Some(error) = section.error() {
         content = content.push(
             container(
@@ -152,8 +160,45 @@ fn clock_card(section: &Home) -> Element<'_, Message> {
         .padding(units(4))
         .width(Length::Fill)
         .center_x(Length::Fill)
+        .center_y(TOP_HEIGHT)
+        .height(TOP_HEIGHT)
         .style(style::panel)
         .into()
+}
+
+fn performance_card(section: &Home) -> Element<'_, Message> {
+    let snapshot = section.snapshot();
+    let cpu = snapshot.map_or(0.0, |s| s.cpu);
+    let ram = snapshot.map_or(0.0, |s| percent_of(s.ram_used, s.ram_total));
+    let gpu = snapshot.and_then(|s| s.gpu.as_ref());
+    let gpu_ring = match (gpu, snapshot) {
+        (Some(gpu), _) => ring_gauge(
+            gpu.usage,
+            usage_color(gpu.usage, metric_gpu()),
+            RING_SIZE,
+            "GPU",
+        ),
+        (None, Some(_)) => ring_gauge(0.0, bg_hover(), RING_SIZE, "sem GPU"),
+        (None, None) => ring_gauge(0.0, metric_gpu(), RING_SIZE, "GPU"),
+    };
+    let rings = row![
+        ring_gauge(cpu, usage_color(cpu, metric_cpu()), RING_SIZE, "CPU"),
+        gpu_ring,
+        ring_gauge(ram, usage_color(ram, metric_memory()), RING_SIZE, "RAM"),
+    ]
+    .spacing(units(3));
+    let content = column![small("Desempenho"), rings]
+        .spacing(units(2))
+        .align_x(Alignment::Center);
+    clickable(
+        container(content)
+            .padding(units(3))
+            .width(PERFORMANCE_WIDTH)
+            .height(TOP_HEIGHT)
+            .center_x(PERFORMANCE_WIDTH)
+            .style(style::panel),
+        Message::Navigate(Destination::Performance),
+    )
 }
 
 fn agenda_row(item: &AgendaItem) -> Element<'_, Message> {

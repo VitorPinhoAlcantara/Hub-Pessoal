@@ -1,0 +1,10 @@
+[package]
+name = "section-desempenho"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hub-ui-kit.workspace = true
+hub-core.workspace = true
+tracing.workspace = true

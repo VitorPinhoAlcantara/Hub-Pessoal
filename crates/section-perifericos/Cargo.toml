@@ -1,0 +1,14 @@
+[package]
+name = "section-perifericos"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hub-ui-kit.workspace = true
+hub-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -16,6 +16,8 @@ section-scripts = { path = "crates/section-scripts" }
 section-inicio = { path = "crates/section-inicio" }
 section-atalhos = { path = "crates/section-atalhos" }
 section-notas = { path = "crates/section-notas" }
+section-desempenho = { path = "crates/section-desempenho" }
+section-perifericos = { path = "crates/section-perifericos" }
 section-whatsapp = { path = "crates/section-whatsapp" }
 panel-ia = { path = "crates/panel-ia" }
 panel-player = { path = "crates/panel-player" }

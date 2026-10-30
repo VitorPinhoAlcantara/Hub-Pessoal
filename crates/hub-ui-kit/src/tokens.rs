@@ -162,6 +162,26 @@ pub fn warning() -> Color {
     palette().warning
 }
 
+pub fn metric_cpu() -> Color {
+    palette().accent
+}
+
+pub fn metric_gpu() -> Color {
+    palette().secondary
+}
+
+pub fn metric_memory() -> Color {
+    hex(0x4FC1C9)
+}
+
+pub fn usage_color(percent: f32, base: Color) -> Color {
+    match hub_core::performance::usage_level(percent) {
+        hub_core::performance::Level::Normal => base,
+        hub_core::performance::Level::Warning => warning(),
+        hub_core::performance::Level::Danger => danger(),
+    }
+}
+
 pub fn console_bg() -> Color {
     let p = palette();
     let color = mix(p.background, hex(0x000000), 0.25);

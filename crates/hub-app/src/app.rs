@@ -19,6 +19,8 @@ use iced::{Event, Point, Vector, event, mouse};
 use section_agenda::Agenda;
 use section_atalhos::Shortcuts;
 use section_inicio::{Destination, Home};
+use section_desempenho::Performance;
+use section_perifericos::Peripherals;
 use section_notas::Notes;
 use section_scripts::Scripts;
 use section_whatsapp::WhatsApp;
@@ -47,8 +49,12 @@ pub enum Tab {
     Shortcuts,
     WhatsApp,
     Notes,
+    Performance,
+    Peripherals,
     Settings,
 }
+
+const GAME_MODE_MUTE_HOURS: u32 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
@@ -59,12 +65,14 @@ pub enum SettingsTab {
 }
 
 impl Tab {
-    pub const SECTIONS: [Tab; 6] = [
+    pub const SECTIONS: [Tab; 8] = [
         Tab::Home,
         Tab::Agenda,
         Tab::Shortcuts,
         Tab::WhatsApp,
         Tab::Notes,
+        Tab::Performance,
+        Tab::Peripherals,
         Tab::Scripts,
     ];
 
@@ -75,6 +83,8 @@ impl Tab {
             Tab::Home => "Início",
             Tab::Shortcuts => "Atalhos",
             Tab::Notes => "Anotações",
+            Tab::Performance => "Desempenho",
+            Tab::Peripherals => "Periféricos",
             Tab::WhatsApp => "WhatsApp",
             Tab::Settings => "Configurações",
         }
@@ -91,6 +101,8 @@ pub enum Message {
     Scripts(section_scripts::Message),
     Shortcuts(section_atalhos::Message),
     Notes(section_notas::Message),
+    Performance(section_desempenho::Message),
+    Peripherals(section_perifericos::Message),
     Home(section_inicio::Message),
     WhatsApp(section_whatsapp::Message),
     ScheduledRun(String, RunEvent),
@@ -134,6 +146,7 @@ pub enum Message {
     SettingsTab(SettingsTab),
     BrowserLogin(hub_core::config::BrowserLogin),
     StartWithSystem(bool),
+    ToggleGameMode,
     AiProvider(AiProviderKind),
     AiApiUrl(String),
     AiApiModel(String),
@@ -154,6 +167,8 @@ pub struct App {
     pub scripts: Option<Scripts>,
     pub shortcuts: Option<Shortcuts>,
     pub notes: Option<Notes>,
+    pub performance: Option<Performance>,
+    pub peripherals: Option<Peripherals>,
     pub home: Option<Home>,
     pub terminal: Option<panel_terminal::Terminal>,
     pub terminal_open: bool,
@@ -180,6 +195,7 @@ pub struct App {
     pub personalization: Personalization,
     pub settings_tab: SettingsTab,
     pub ai_status: Vec<(AiProviderKind, Availability)>,
+    pub game_mode: Option<hub_core::platform::FocusState>,
     pub wallpaper: Option<appearance::WallpaperFrame>,
     pub wallpaper_generation: u64,
     pub raw_window: Option<u64>,
@@ -281,6 +297,8 @@ impl App {
             scripts: None,
             shortcuts: None,
             notes: None,
+            performance: None,
+            peripherals: None,
             home: None,
             terminal: None,
             terminal_open: false,
@@ -307,6 +325,7 @@ impl App {
             personalization,
             settings_tab: SettingsTab::Personalization,
             ai_status: Vec::new(),
+            game_mode: None,
             wallpaper: None,
             wallpaper_generation: 0,
             raw_window: None,
@@ -353,6 +372,12 @@ impl App {
                     section.on_hide();
                 }
             }
+            Tab::Performance => {
+                self.performance = None;
+            }
+            Tab::Peripherals => {
+                self.peripherals = None;
+            }
             Tab::Home => {
                 if let Some(section) = &mut self.home {
                     section.on_hide();
@@ -376,6 +401,8 @@ impl App {
         self.scripts = None;
         self.shortcuts = None;
         self.notes = None;
+        self.performance = None;
+        self.peripherals = None;
         self.home = None;
         self.whatsapp = None;
         if let Some(chat) = &mut self.chat {
@@ -402,6 +429,12 @@ impl App {
             }
             Tab::Notes if self.notes.is_none() => {
                 self.notes = Some(Notes::new(self.ctx.clone()));
+            }
+            Tab::Performance if self.performance.is_none() => {
+                self.performance = Some(Performance::new());
+            }
+            Tab::Peripherals if self.peripherals.is_none() => {
+                self.peripherals = Some(Peripherals::new(self.ctx.clone()));
             }
             Tab::Home if self.home.is_none() => {
                 self.home = Some(Home::new(self.ctx.clone()));
@@ -452,6 +485,7 @@ impl App {
         match destination {
             Destination::Agenda => self.select_tab(Tab::Agenda),
             Destination::Shortcuts => self.select_tab(Tab::Shortcuts),
+            Destination::Performance => self.select_tab(Tab::Performance),
             Destination::Notes(note) => {
                 self.select_tab(Tab::Notes);
                 if let (Some(id), Some(notes)) = (note, &mut self.notes) {
@@ -611,7 +645,13 @@ impl App {
                     return window::close(id);
                 }
             }
-            Message::TabSelected(tab) => self.select_tab(tab),
+            Message::TabSelected(tab) => {
+                let fresh = tab == Tab::Peripherals && self.peripherals.is_none();
+                self.select_tab(tab);
+                if fresh {
+                    return Task::done(Message::Peripherals(section_perifericos::Message::Retry));
+                }
+            }
             Message::Agenda(message) => {
                 if let Some(agenda) = &mut self.agenda {
                     return agenda.update(message).map(Message::Agenda);
@@ -633,6 +673,16 @@ impl App {
             Message::Notes(message) => {
                 if let Some(notes) = &mut self.notes {
                     return notes.update(message).map(Message::Notes);
+                }
+            }
+            Message::Peripherals(message) => {
+                if let Some(peripherals) = &mut self.peripherals {
+                    return peripherals.update(message).map(Message::Peripherals);
+                }
+            }
+            Message::Performance(message) => {
+                if let Some(performance) = &mut self.performance {
+                    return performance.update(message).map(Message::Performance);
                 }
             }
             Message::Shortcuts(message) => {
@@ -972,6 +1022,31 @@ impl App {
                 }
                 *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
             }
+            Message::ToggleGameMode => {
+                let leds = self.ctx.config().leds;
+                let profile = match self.game_mode.take() {
+                    Some(previous) => {
+                        hub_core::platform::leave_game_mode(previous);
+                        self.ctx.unmute_notifications();
+                        leds.normal_profile.clone()
+                    }
+                    None => {
+                        self.game_mode = Some(hub_core::platform::enter_game_mode());
+                        self.ctx.mute_notifications(GAME_MODE_MUTE_HOURS);
+                        leds.game_profile.clone()
+                    }
+                };
+                self.refresh_tray();
+                if !profile.is_empty() && !self.options.smoke_test {
+                    return Task::future(async move {
+                        if let Err(error) = hub_core::leds::apply_profile(leds.port, &profile).await
+                        {
+                            tracing::warn!(%error, "falha ao aplicar o perfil de LEDs");
+                        }
+                    })
+                    .discard();
+                }
+            }
             Message::StartWithSystem(enabled) => {
                 if let Err(error) = hub_core::platform::set_autostart(enabled) {
                     tracing::warn!(%error, "falha ao configurar o início com o sistema");
@@ -1101,6 +1176,10 @@ impl App {
     }
 
     fn quit(&mut self) -> Task<Message> {
+        if let Some(previous) = self.game_mode.take() {
+            hub_core::platform::leave_game_mode(previous);
+            self.ctx.unmute_notifications();
+        }
         self.ctx.whatsapp.shutdown();
         hub_core::vault::clear_temp();
         iced::exit()
@@ -1133,6 +1212,8 @@ impl App {
             Tab::Shortcuts,
             Tab::WhatsApp,
             Tab::Notes,
+            Tab::Performance,
+            Tab::Peripherals,
             Tab::Settings,
             Tab::Home,
             Tab::Agenda,
@@ -1209,6 +1290,14 @@ impl App {
                     .notes
                     .as_ref()
                     .map(|s| s.subscription().map(Message::Notes)),
+                Tab::Performance => self
+                    .performance
+                    .as_ref()
+                    .map(|s| s.subscription().map(Message::Performance)),
+                Tab::Peripherals => self
+                    .peripherals
+                    .as_ref()
+                    .map(|s| s.subscription().map(Message::Peripherals)),
                 Tab::Home => self
                     .home
                     .as_ref()

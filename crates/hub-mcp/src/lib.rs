@@ -1,3 +1,4 @@
+pub mod api;
 mod tools;
 
 use std::hash::{BuildHasher, Hasher};
@@ -162,8 +163,20 @@ pub fn start(ctx: HubContext, port: u16, token: String) -> Result<McpServer, Mcp
                         Default::default(),
                         StreamableHttpServerConfig::default(),
                     );
+                let api_state = api::ApiState {
+                    mcp_url: format!("http://{addr}{MCP_PATH}"),
+                    token: auth_token.clone(),
+                };
+                let api = axum::Router::new()
+                    .route(api::API_PATH, axum::routing::get(api::index))
+                    .route(
+                        &format!("{}/{{tool}}", api::API_PATH),
+                        axum::routing::post(api::call),
+                    )
+                    .with_state(api_state);
                 let router = axum::Router::new()
                     .nest_service(MCP_PATH, service)
+                    .merge(api)
                     .layer(middleware::from_fn_with_state(auth_token, require_token));
                 let result = axum::serve(listener, router)
                     .with_graceful_shutdown(async move {

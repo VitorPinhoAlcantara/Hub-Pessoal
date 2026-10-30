@@ -81,10 +81,12 @@ pub async fn run_terminal(
     spec: &CommandSpec,
     cwd: &Path,
     timeout: Duration,
+    env: &[(&str, String)],
 ) -> std::io::Result<TerminalOutput> {
     let mut command = tokio::process::Command::new(&spec.program);
     command
         .args(&spec.args)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -168,6 +170,7 @@ mod tests {
             &terminal_command(os, "echo ola; exit 3", pwsh),
             &cwd,
             Duration::from_secs(60),
+            &[],
         )
         .await
         .unwrap();
@@ -187,6 +190,7 @@ mod tests {
             &terminal_command(os, command, has_pwsh()),
             &std::env::temp_dir(),
             Duration::from_millis(300),
+            &[],
         )
         .await
         .unwrap();

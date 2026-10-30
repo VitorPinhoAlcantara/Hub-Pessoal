@@ -13,6 +13,7 @@ use hub_core::HubContext;
 use hub_core::agenda::{self, Reminder, Task};
 use hub_core::chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use hub_core::notes::{self, Note};
+use hub_core::performance::{Sampler, Snapshot};
 use hub_core::platform::{FileIcon, Platform};
 use hub_core::shortcuts::{self, Shortcut};
 use hub_ui_kit::Section;
@@ -30,6 +31,7 @@ pub enum Destination {
     Agenda,
     Shortcuts,
     Notes(Option<i64>),
+    Performance,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,8 @@ pub struct Home {
     icons: HashMap<PathBuf, Option<Handle>>,
     favorite: Option<Note>,
     error: Option<String>,
+    sampler: Option<Sampler>,
+    snapshot: Option<Snapshot>,
 }
 
 pub fn weekday_name(day: Weekday) -> &'static str {
@@ -144,6 +148,8 @@ impl Home {
             icons: HashMap::new(),
             favorite: None,
             error: None,
+            sampler: None,
+            snapshot: None,
         };
         section.refresh();
         section
@@ -174,6 +180,10 @@ impl Home {
 
     pub fn favorite(&self) -> Option<&Note> {
         self.favorite.as_ref()
+    }
+
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.snapshot.as_ref()
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -351,6 +361,8 @@ impl Section for Home {
                 if self.now.date() != previous {
                     self.load_agenda();
                 }
+                let sampler = self.sampler.get_or_insert_with(Sampler::new);
+                self.snapshot = Some(sampler.sample());
             }
             Message::Navigate(_) => {}
             Message::Open(index) => self.open(index),
