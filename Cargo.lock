@@ -1998,7 +1998,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hub-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "hub-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arboard",
  "argon2",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "hub-mcp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axum",
  "hub-core",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "hub-ui-kit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "fontdb",
  "hub-core",
@@ -3955,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "panel-ia"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3971,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "panel-player"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures",
  "hub-core",
@@ -3983,7 +3983,7 @@ dependencies = [
 
 [[package]]
 name = "panel-terminal"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5017,7 +5017,7 @@ dependencies = [
 
 [[package]]
 name = "section-agenda"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5026,7 +5026,7 @@ dependencies = [
 
 [[package]]
 name = "section-atalhos"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5037,7 +5037,7 @@ dependencies = [
 
 [[package]]
 name = "section-desempenho"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5046,7 +5046,7 @@ dependencies = [
 
 [[package]]
 name = "section-inicio"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5057,7 +5057,7 @@ dependencies = [
 
 [[package]]
 name = "section-notas"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5068,7 +5068,7 @@ dependencies = [
 
 [[package]]
 name = "section-perifericos"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5079,7 +5079,7 @@ dependencies = [
 
 [[package]]
 name = "section-scripts"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
@@ -5089,7 +5089,7 @@ dependencies = [
 
 [[package]]
 name = "section-whatsapp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hub-core",
  "hub-ui-kit",
