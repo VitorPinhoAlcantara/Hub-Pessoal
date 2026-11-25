@@ -50,3 +50,21 @@ resources = ["../../target/distribuicao/release/whatsapp-bridge.exe"]
 installer-mode = "currentUser"
 installer-icon = "../../assets/app/hub.ico"
 languages = ["PortugueseBR"]
+preinstall-section = """
+Section OpenRgbOpcional
+  IfSilent openrgb_fim
+  nsExec::ExecToStack 'winget --version'
+  Pop $0
+  StrCmp $0 "0" 0 openrgb_fim
+  nsExec::ExecToStack 'winget list --id OpenRGB.OpenRGB -e --accept-source-agreements'
+  Pop $0
+  StrCmp $0 "0" openrgb_fim
+  MessageBox MB_YESNO|MB_ICONQUESTION "Instalar também o OpenRGB? Ele permite que o Hub controle os LEDs do teclado, mouse, memórias, placa mãe e ventoinhas. A instalação usa o winget e pode levar alguns minutos." IDNO openrgb_fim
+  DetailPrint "Instalando o OpenRGB pelo winget"
+  nsExec::ExecToLog 'winget install --id OpenRGB.OpenRGB -e --silent --accept-source-agreements --accept-package-agreements'
+  Pop $0
+  StrCmp $0 "0" openrgb_fim
+  MessageBox MB_OK|MB_ICONEXCLAMATION "Não foi possível instalar o OpenRGB agora. Dá para instalar depois pela aba Periféricos do Hub."
+  openrgb_fim:
+SectionEnd
+"""

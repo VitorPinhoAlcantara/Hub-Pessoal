@@ -31,10 +31,10 @@ impl SubTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Focus {
     All,
-    Device(u32),
+    Device(String),
 }
 
 #[derive(Debug, Clone)]
@@ -47,9 +47,14 @@ pub enum Message {
     Swatch(Focus, Color),
     Picker(PickerMessage),
     Painted(Result<usize, String>),
-    Mode(u32, usize),
-    Speed(u32, u32),
-    SpeedReleased(u32),
+    Mode(String, usize),
+    Speed(String, u32),
+    SpeedReleased(String),
+    InvertSpeed(String),
+    ShowOpenRgb,
+    TurnOff,
+    InstallOpenRgb,
+    Installed(Result<(), String>),
     Profile(String),
     ProfileApplied(Result<(), String>),
     GameProfile(String),
@@ -67,15 +72,16 @@ pub struct Peripherals {
     ctx: HubContext,
     sub_tab: SubTab,
     status: Status,
-    focus: Focus,
+    focus: Option<Focus>,
     picker: ColorPicker,
-    colors: HashMap<u32, Color>,
+    colors: HashMap<String, Color>,
     all_color: Color,
-    speeds: HashMap<u32, u32>,
+    speeds: HashMap<String, u32>,
     in_flight: bool,
     pending: Option<(Target, Rgb)>,
     notice: Option<String>,
     openrgb: Option<PathBuf>,
+    installing: bool,
 }
 
 fn rgb(color: Color) -> Rgb {
@@ -89,7 +95,7 @@ impl Peripherals {
             ctx,
             sub_tab: SubTab::Leds,
             status: Status::Loading,
-            focus: Focus::All,
+            focus: Some(Focus::All),
             picker: ColorPicker::new(color_picker::SWATCHES[0]),
             colors: HashMap::new(),
             all_color: color_picker::SWATCHES[0],
@@ -98,6 +104,7 @@ impl Peripherals {
             pending: None,
             notice: None,
             openrgb: None,
+            installing: false,
         }
     }
 
@@ -109,8 +116,12 @@ impl Peripherals {
         self.sub_tab
     }
 
-    pub fn focus(&self) -> Focus {
-        self.focus
+    pub fn focus(&self) -> Option<&Focus> {
+        self.focus.as_ref()
+    }
+
+    pub fn installing(&self) -> bool {
+        self.installing
     }
 
     pub fn notice(&self) -> Option<&str> {
@@ -157,10 +168,10 @@ impl Peripherals {
         )
     }
 
-    fn color_of(&self, focus: Focus) -> Color {
+    fn color_of(&self, focus: &Focus) -> Color {
         match focus {
             Focus::All => self.all_color,
-            Focus::Device(index) => self.colors.get(&index).copied().unwrap_or(self.all_color),
+            Focus::Device(name) => self.colors.get(name).copied().unwrap_or(self.all_color),
         }
     }
 
@@ -171,20 +182,24 @@ impl Peripherals {
                 self.colors.clear();
                 Target::All
             }
-            Focus::Device(index) => {
-                self.colors.insert(index, color);
-                Target::Index(index)
+            Focus::Device(name) => {
+                self.colors.insert(name.clone(), color);
+                Target::Name(name)
             }
         };
         self.paint(target, rgb(color))
     }
 
-    pub fn device_speed(&self, index: u32) -> Option<u32> {
-        self.speeds.get(&index).copied()
+    pub fn speed_inverted(&self, name: &str) -> bool {
+        self.ctx.config().leds.inverted_speed.iter().any(|n| n == name)
     }
 
-    pub fn device_color(&self, index: u32) -> Color {
-        self.color_of(Focus::Device(index))
+    pub fn device_speed(&self, name: &str) -> Option<u32> {
+        self.speeds.get(name).copied()
+    }
+
+    pub fn device_color(&self, name: &str) -> Color {
+        self.colors.get(name).copied().unwrap_or(self.all_color)
     }
 
     pub fn all_color(&self) -> Color {
@@ -217,11 +232,11 @@ impl Peripherals {
         *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
-    fn set_active_mode(&mut self, device: u32, mode: usize) {
-        if let Status::Ready(snapshot) = &mut self.status
-            && let Some(found) = snapshot.devices.iter_mut().find(|d| d.index == device)
-        {
-            found.active_mode = mode;
+    fn set_active_mode(&mut self, name: &str, mode: usize) {
+        if let Status::Ready(snapshot) = &mut self.status {
+            for device in snapshot.devices.iter_mut().filter(|d| d.name == name) {
+                device.active_mode = mode;
+            }
         }
     }
 }
@@ -237,6 +252,46 @@ impl Section for Peripherals {
         match message {
             Message::SubTab(tab) => self.sub_tab = tab,
             Message::Retry => return self.load(Duration::ZERO),
+            Message::TurnOff => {
+                let target = match self.focus.clone().unwrap_or(Focus::All) {
+                    Focus::All => Target::All,
+                    Focus::Device(name) => Target::Name(name),
+                };
+                let port = self.port();
+                return Task::perform(
+                    async move { leds::turn_off(port, target).await.map_err(|e| e.to_string()) },
+                    Message::Painted,
+                );
+            }
+            Message::ShowOpenRgb => {
+                if let Some(path) = self.openrgb.clone() {
+                    let port = self.port();
+                    return Task::perform(
+                        async move {
+                            leds::show_openrgb(path, port)
+                                .await
+                                .map_err(|e| format!("Não foi possível abrir o OpenRGB ({e})"))
+                        },
+                        Message::ProfileApplied,
+                    );
+                }
+            }
+            Message::InstallOpenRgb => {
+                self.installing = true;
+                self.notice = Some("Instalando o OpenRGB pelo winget, pode levar alguns minutos".to_string());
+                return Task::perform(leds::install_openrgb(), Message::Installed);
+            }
+            Message::Installed(result) => {
+                self.installing = false;
+                match result {
+                    Ok(()) => {
+                        self.notice = None;
+                        self.openrgb = leds::find_openrgb();
+                        return self.update(Message::OpenOpenRgb);
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+            }
             Message::OpenOpenRgb => {
                 if let Some(path) = &self.openrgb {
                     if let Err(error) = leds::start_openrgb(path) {
@@ -252,24 +307,39 @@ impl Section for Peripherals {
                     self.notice = None;
                     for device in &snapshot.devices {
                         if let Some(mode) = device.active() {
-                            self.speeds.entry(device.index).or_insert(mode.speed);
+                            self.speeds.entry(device.name.clone()).or_insert(mode.speed);
                         }
                     }
+                    let last = self.ctx.config().leds.last_device;
+                    self.focus = Some(if snapshot.devices.iter().any(|d| d.name == last) {
+                        Focus::Device(last)
+                    } else {
+                        Focus::All
+                    });
                     self.status = Status::Ready(snapshot);
                 }
                 Err(error) => self.status = Status::Failed(error),
             },
             Message::Focus(focus) => {
-                self.focus = focus;
-                self.picker.set_color(self.color_of(focus));
+                self.picker.set_color(self.color_of(&focus));
+                let mut config = self.ctx.config();
+                config.leds.last_device = match &focus {
+                    Focus::All => String::new(),
+                    Focus::Device(name) => name.clone(),
+                };
+                if let Err(error) = config.save(&self.ctx.paths.config_file()) {
+                    tracing::warn!(%error, "falha ao salvar o último dispositivo");
+                }
+                *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
+                self.focus = Some(focus);
             }
             Message::Swatch(focus, color) => {
                 self.picker.set_color(color);
                 return self.choose_color(focus, color);
             }
             Message::Picker(message) => {
-                if let Some(color) = self.picker.update(message) {
-                    return self.choose_color(self.focus, color);
+                if let (Some(color), Some(focus)) = (self.picker.update(message), self.focus.clone()) {
+                    return self.choose_color(focus, color);
                 }
             }
             Message::Painted(result) => {
@@ -280,13 +350,13 @@ impl Section for Peripherals {
                 }
             }
             Message::Mode(device, mode) => {
-                self.set_active_mode(device, mode);
+                self.set_active_mode(&device, mode);
                 let port = self.port();
                 let color = self.colors.get(&device).copied().map(rgb);
                 let speed = self.speeds.get(&device).copied();
                 return Task::perform(
                     async move {
-                        leds::set_mode(port, device, mode, speed, color)
+                        leds::set_mode(port, Target::Name(device), mode, speed, color)
                             .await
                             .map(|_| 1)
                             .map_err(|e| e.to_string())
@@ -302,7 +372,7 @@ impl Section for Peripherals {
                     Status::Ready(snapshot) => snapshot
                         .devices
                         .iter()
-                        .find(|d| d.index == device)
+                        .find(|d| d.name == device)
                         .map(|d| d.active_mode),
                     _ => None,
                 };
@@ -324,6 +394,20 @@ impl Section for Peripherals {
             Message::ProfileApplied(result) => {
                 self.notice = result.err();
                 return self.load(Duration::ZERO);
+            }
+            Message::InvertSpeed(name) => {
+                let mut config = self.ctx.config();
+                let list = &mut config.leds.inverted_speed;
+                match list.iter().position(|n| *n == name) {
+                    Some(index) => {
+                        list.remove(index);
+                    }
+                    None => list.push(name),
+                }
+                if let Err(error) = config.save(&self.ctx.paths.config_file()) {
+                    tracing::warn!(%error, "falha ao salvar a configuração dos LEDs");
+                }
+                *self.ctx.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
             }
             Message::GameProfile(name) => self.save_profile_choice(true, name),
             Message::NormalProfile(name) => self.save_profile_choice(false, name),

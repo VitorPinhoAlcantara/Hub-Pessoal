@@ -17,12 +17,12 @@ const ID_CLIENT_NAME: u32 = 50;
 const ID_PROFILE_LIST: u32 = 150;
 const ID_LOAD_PROFILE: u32 = 152;
 const ID_UPDATE_LEDS: u32 = 1050;
-const ID_SET_CUSTOM_MODE: u32 = 1100;
 const ID_UPDATE_MODE: u32 = 1101;
 
 pub const FLAG_SPEED: u32 = 1 << 0;
 pub const FLAG_PER_LED_COLOR: u32 = 1 << 5;
 pub const FLAG_MODE_COLOR: u32 = 1 << 6;
+pub const COLOR_MODE_PER_LED: u32 = 1;
 
 pub type Rgb = [u8; 3];
 
@@ -142,7 +142,39 @@ pub struct Mode {
 
 impl Mode {
     pub fn has_speed(&self) -> bool {
-        self.flags & FLAG_SPEED != 0 && self.speed_max > self.speed_min
+        self.flags & FLAG_SPEED != 0 && self.speed_max != self.speed_min
+    }
+
+    pub fn speed_steps(&self) -> u32 {
+        self.speed_min.abs_diff(self.speed_max)
+    }
+
+    pub fn speed_from_level(&self, level: u32, inverted: bool) -> u32 {
+        let steps = self.speed_steps();
+        let level = level.min(steps);
+        let level = if inverted { steps - level } else { level };
+        if self.speed_min <= self.speed_max {
+            self.speed_min + level
+        } else {
+            self.speed_min - level
+        }
+    }
+
+    pub fn level_of_speed(&self, speed: u32, inverted: bool) -> u32 {
+        let steps = self.speed_steps();
+        let level = speed.abs_diff(self.speed_min).min(steps);
+        if inverted { steps - level } else { level }
+    }
+
+    pub fn clamp_speed(&self, speed: u32) -> u32 {
+        speed.clamp(
+            self.speed_min.min(self.speed_max),
+            self.speed_min.max(self.speed_max),
+        )
+    }
+
+    pub fn solid(&self) -> bool {
+        self.per_led() && self.flags & FLAG_SPEED == 0
     }
 
     pub fn per_led(&self) -> bool {
@@ -498,22 +530,16 @@ impl Client {
     }
 
     pub async fn set_color(&mut self, device: &Device, color: Rgb) -> Result<(), LedError> {
-        let active_per_led = device.active().is_some_and(Mode::per_led);
-        if !active_per_led && device.modes.iter().any(Mode::per_led) {
-            self.write(device.index, ID_SET_CUSTOM_MODE, &[]).await?;
-        } else if !active_per_led {
-            let (index, mode) = device
-                .modes
-                .iter()
-                .enumerate()
-                .find(|(_, mode)| mode.mode_color())
-                .ok_or_else(|| {
-                    LedError::Invalid(format!("{} não aceita cor sólida", device.name))
-                })?;
-            let mode = with_color(mode, color);
-            self.send_mode(device, index, &mode).await?;
+        let index = solid_mode(device)
+            .ok_or_else(|| LedError::Invalid(format!("{} não aceita cor sólida", device.name)))?;
+        let base = &device.modes[index];
+        if !base.per_led() {
+            self.send_mode(device, index, &with_color(base, color)).await?;
             return self.sync().await;
         }
+        let mut mode = base.clone();
+        mode.color_mode = COLOR_MODE_PER_LED;
+        self.send_mode(device, index, &mode).await?;
         let size = 6 + device.led_count * 4;
         let mut data = Vec::with_capacity(size);
         put_u32(&mut data, size as u32);
@@ -543,11 +569,35 @@ impl Client {
         if let Some(speed) = speed
             && mode.has_speed()
         {
-            mode.speed = speed.clamp(mode.speed_min, mode.speed_max);
+            mode.speed = mode.clamp_speed(speed);
         }
         self.send_mode(device, index, &mode).await?;
         self.sync().await
     }
+}
+
+pub fn solid_mode(device: &Device) -> Option<usize> {
+    let modes = &device.modes;
+    modes
+        .iter()
+        .position(|m| {
+            m.name.eq_ignore_ascii_case("static")
+                && m.flags & FLAG_SPEED == 0
+                && (m.per_led() || m.mode_color())
+        })
+        .or_else(|| modes.iter().position(Mode::solid))
+        .or_else(|| {
+            modes
+                .iter()
+                .position(|m| m.mode_color() && m.flags & FLAG_SPEED == 0)
+        })
+}
+
+pub fn off_mode(device: &Device) -> Option<usize> {
+    device
+        .modes
+        .iter()
+        .position(|m| m.name.eq_ignore_ascii_case("off"))
 }
 
 fn with_color(mode: &Mode, color: Rgb) -> Mode {
@@ -597,18 +647,44 @@ pub async fn paint(port: u16, target: Target, color: Rgb) -> Result<usize, LedEr
 
 pub async fn set_mode(
     port: u16,
-    device: u32,
+    target: Target,
     mode: usize,
     speed: Option<u32>,
     color: Option<Rgb>,
 ) -> Result<(), LedError> {
     let mut client = Client::connect(port).await?;
     let devices = client.devices().await?;
-    let device = devices
-        .iter()
-        .find(|d| d.index == device)
-        .ok_or_else(|| LedError::Invalid("dispositivo não encontrado".to_string()))?;
-    client.activate_mode(device, mode, speed, color).await
+    let mut found = false;
+    for device in devices.iter().filter(|d| matches(d, &target)) {
+        client.activate_mode(device, mode, speed, color).await?;
+        found = true;
+    }
+    if found {
+        Ok(())
+    } else {
+        Err(LedError::Invalid("dispositivo não encontrado".to_string()))
+    }
+}
+
+pub async fn turn_off(port: u16, target: Target) -> Result<usize, LedError> {
+    let mut client = Client::connect(port).await?;
+    let devices = client.devices().await?;
+    let mut done = 0;
+    for device in devices.iter().filter(|d| matches(d, &target)) {
+        match off_mode(device) {
+            Some(index) => {
+                let mode = device.modes[index].clone();
+                client.send_mode(device, index, &mode).await?;
+                client.sync().await?;
+            }
+            None => client.set_color(device, [0, 0, 0]).await?,
+        }
+        done += 1;
+    }
+    if done == 0 {
+        return Err(LedError::Invalid("dispositivo não encontrado".to_string()));
+    }
+    Ok(done)
 }
 
 pub async fn apply_profile(port: u16, name: &str) -> Result<(), LedError> {
@@ -621,6 +697,52 @@ pub fn find_openrgb() -> Option<PathBuf> {
 
 pub fn start_openrgb(path: &Path) -> std::io::Result<()> {
     crate::platform::spawn_detached(path, &["--server", "--startminimized"])
+}
+
+pub async fn show_openrgb(path: PathBuf, port: u16) -> std::io::Result<()> {
+    let address = format!("127.0.0.1:{port}");
+    let running = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect(&address),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    if running {
+        crate::platform::spawn_detached(&path, &["--client", &address])
+    } else {
+        crate::platform::spawn_detached(&path, &["--server"])
+    }
+}
+
+pub const OPENRGB_WINGET_ID: &str = "OpenRGB.OpenRGB";
+
+pub async fn install_openrgb() -> Result<(), String> {
+    let mut command = tokio::process::Command::new("winget");
+    command
+        .args([
+            "install",
+            "--id",
+            OPENRGB_WINGET_ID,
+            "-e",
+            "--silent",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    crate::platform::hide_console(&mut command);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("o winget não está disponível neste PC ({e})"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+    Err(format!("o winget não conseguiu instalar ({})", last.trim()))
 }
 
 pub fn parse_color(text: &str) -> Option<Rgb> {

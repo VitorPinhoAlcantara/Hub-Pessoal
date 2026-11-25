@@ -218,6 +218,7 @@ async fn paint_updates_leds_of_named_device() {
     .unwrap();
     assert_eq!(painted, 1);
     assert_eq!(sent(&log, 1100).len(), 0);
+    assert_eq!(&sent(&log, 1101)[0][4..8], &0u32.to_le_bytes());
     let leds = &sent(&log, 1050)[0];
     assert_eq!(&leds[..4], &18u32.to_le_bytes());
     assert_eq!(&leds[4..6], &3u16.to_le_bytes());
@@ -232,7 +233,7 @@ async fn paint_updates_leds_of_named_device() {
 #[tokio::test]
 async fn mode_change_clamps_speed_and_sets_color() {
     let (port, log) = fake_server().await;
-    set_mode(port, 0, 1, Some(99), Some([5, 6, 7]))
+    set_mode(port, Target::Index(0), 1, Some(99), Some([5, 6, 7]))
         .await
         .unwrap();
     let packet = &sent(&log, 1101)[0];
@@ -261,4 +262,81 @@ async fn connection_refused_is_reported() {
         snapshot(port).await,
         Err(LedError::Connect { .. })
     ));
+}
+
+#[test]
+fn speed_levels_go_from_slow_to_fast_in_both_scales() {
+    let mut mode = Mode {
+        name: "Breathing".into(),
+        value: 1,
+        flags: FLAG_SPEED | FLAG_PER_LED_COLOR,
+        speed_min: 4,
+        speed_max: 0,
+        brightness_min: 0,
+        brightness_max: 0,
+        colors_min: 0,
+        colors_max: 0,
+        speed: 2,
+        brightness: 0,
+        direction: 0,
+        color_mode: 0,
+        colors: Vec::new(),
+    };
+    assert!(mode.has_speed());
+    assert!(!mode.solid());
+    assert_eq!(mode.speed_from_level(0, false), 4);
+    assert_eq!(mode.speed_from_level(4, false), 0);
+    assert_eq!(mode.level_of_speed(1, false), 3);
+    assert_eq!(mode.clamp_speed(9), 4);
+    mode.speed_min = 0;
+    mode.speed_max = 5;
+    assert_eq!(mode.speed_from_level(5, false), 5);
+    assert_eq!(mode.speed_from_level(5, true), 0);
+    assert_eq!(mode.level_of_speed(0, true), 5);
+    mode.flags = FLAG_PER_LED_COLOR;
+    assert!(mode.solid());
+}
+
+fn plain_mode(name: &str, flags: u32) -> Mode {
+    Mode {
+        name: name.into(),
+        value: 0,
+        flags,
+        speed_min: 0,
+        speed_max: if flags & FLAG_SPEED != 0 { 2 } else { 0 },
+        brightness_min: 0,
+        brightness_max: 0,
+        colors_min: 0,
+        colors_max: 0,
+        speed: 0,
+        brightness: 0,
+        direction: 0,
+        color_mode: 3,
+        colors: Vec::new(),
+    }
+}
+
+#[test]
+fn solid_prefers_static_and_off_is_found_by_name() {
+    let mut device = Device {
+        index: 0,
+        kind: DeviceKind::Motherboard,
+        name: "Placa".into(),
+        vendor: String::new(),
+        description: String::new(),
+        serial: String::new(),
+        location: String::new(),
+        active_mode: 0,
+        modes: vec![
+            plain_mode("Direct", FLAG_PER_LED_COLOR),
+            plain_mode("Static", FLAG_PER_LED_COLOR),
+            plain_mode("Breathing", FLAG_PER_LED_COLOR | FLAG_SPEED),
+        ],
+        led_count: 8,
+    };
+    assert_eq!(solid_mode(&device), Some(1));
+    assert_eq!(off_mode(&device), None);
+    device.modes[1] = plain_mode("Off", 0);
+    assert_eq!(solid_mode(&device), Some(0));
+    assert_eq!(off_mode(&device), Some(1));
 }

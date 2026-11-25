@@ -58,6 +58,10 @@ pub struct LedsConfig {
     pub game_profile: String,
     #[serde(rename = "perfil_normal")]
     pub normal_profile: String,
+    #[serde(rename = "velocidade_invertida")]
+    pub inverted_speed: Vec<String>,
+    #[serde(rename = "ultimo_dispositivo")]
+    pub last_device: String,
 }
 
 impl Default for LedsConfig {
@@ -66,6 +70,8 @@ impl Default for LedsConfig {
             port: 6742,
             game_profile: String::new(),
             normal_profile: String::new(),
+            inverted_speed: Vec::new(),
+            last_device: String::new(),
         }
     }
 }

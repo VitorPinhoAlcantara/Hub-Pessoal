@@ -72,9 +72,10 @@ fn starts_loading_and_renders_every_state() {
     let _ = section.update(Message::Loaded(Ok(snapshot())));
     assert!(matches!(section.status(), Status::Ready(_)));
     let _ = section.view();
-    let _ = section.update(Message::Focus(Focus::Device(0)));
-    assert_eq!(section.focus(), Focus::Device(0));
-    let _ = section.update(Message::Mode(0, 1));
+    let name = snapshot().devices[0].name.clone();
+    let _ = section.update(Message::Focus(Focus::Device(name.clone())));
+    assert_eq!(section.focus(), Some(&Focus::Device(name.clone())));
+    let _ = section.update(Message::Mode(name, 1));
     let _ = section.view();
     match section.status() {
         Status::Ready(snapshot) => assert_eq!(snapshot.devices[0].active_mode, 1),
@@ -104,4 +105,22 @@ fn painting_while_busy_keeps_only_the_latest_color() {
     let _ = section.update(Message::Swatch(Focus::All, color_picker::SWATCHES[3]));
     assert!(section.pending.is_some());
     assert_eq!(section.all_color(), color_picker::SWATCHES[3]);
+}
+
+#[test]
+fn remembers_last_device_and_falls_back_to_all() {
+    let (mut section, ctx, _temp) = setup();
+    let _ = section.update(Message::Loaded(Ok(snapshot())));
+    assert_eq!(section.focus(), Some(&Focus::All));
+    let name = snapshot().devices[0].name.clone();
+    let _ = section.update(Message::Focus(Focus::Device(name.clone())));
+    let mut again = Peripherals::new(ctx.clone());
+    let _ = again.update(Message::Loaded(Ok(snapshot())));
+    assert_eq!(again.focus(), Some(&Focus::Device(name)));
+    let mut config = ctx.config();
+    config.leds.last_device = "sumiu".into();
+    *ctx.config.lock().unwrap() = config;
+    let mut fallback = Peripherals::new(ctx);
+    let _ = fallback.update(Message::Loaded(Ok(snapshot())));
+    assert_eq!(fallback.focus(), Some(&Focus::All));
 }

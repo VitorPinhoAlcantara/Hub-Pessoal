@@ -72,6 +72,15 @@ icons! {
     Image => "image",
     External => "external",
     Terminal => "terminal",
+    Keyboard => "teclado",
+    Mouse => "mouse",
+    Board => "placa",
+    Memory => "memoria",
+    Gpu => "gpu",
+    Fan => "ventoinha",
+    Light => "luz",
+    Headphones => "fone",
+    Monitor => "monitor",
     Game => "game",
 }
 

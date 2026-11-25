@@ -1,6 +1,6 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
-use iced::widget::{Space, button, column, container, row, slider, text};
+use iced::widget::{Space, button, column, container, row, slider};
 use iced::{
     Alignment, Background, Border, Color, Element, Event, Length, Point, Rectangle, Renderer, Size,
     Theme,
@@ -66,8 +66,8 @@ pub fn swatches<'a, M: Clone + 'a>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PickerMode {
     #[default]
-    Hsv,
     Rgb,
+    Hsv,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +77,7 @@ pub enum PickerMessage {
     Red(u8),
     Green(u8),
     Blue(u8),
+    ChannelTyped(usize, String),
     HexChanged(String),
     HexSubmitted,
     Mode(PickerMode),
@@ -163,7 +164,7 @@ impl ColorPicker {
             hue,
             saturation,
             value,
-            mode: PickerMode::Hsv,
+            mode: PickerMode::Rgb,
             hex: to_hex(color),
         }
     }
@@ -205,6 +206,16 @@ impl ColorPicker {
             PickerMessage::Blue(b) => {
                 let (r, g, _) = before;
                 self.set_color(Color::from_rgb8(r, g, b));
+            }
+            PickerMessage::ChannelTyped(index, text) => {
+                let value = parse_channel(&text);
+                let (r, g, b) = before;
+                let color = match index {
+                    0 => Color::from_rgb8(value, g, b),
+                    1 => Color::from_rgb8(r, value, b),
+                    _ => Color::from_rgb8(r, g, value),
+                };
+                self.set_color(color);
             }
             PickerMessage::HexChanged(text) => match parse_hex(&text) {
                 Some(color) => self.set_color(color),
@@ -401,19 +412,39 @@ impl canvas::Program<PickerMessage> for HueBar {
     }
 }
 
+pub fn parse_channel(text: &str) -> u8 {
+    let digits: String = text.chars().filter(char::is_ascii_digit).take(3).collect();
+    digits.parse::<u32>().map_or(0, |v| v.min(255) as u8)
+}
+
+fn channel_input<'a, M: Clone + 'a>(
+    index: usize,
+    value: u8,
+    on_message: impl Fn(PickerMessage) -> M + 'a,
+) -> Element<'a, M> {
+    text_field("0", &value.to_string(), move |v| {
+        on_message(PickerMessage::ChannelTyped(index, v))
+    })
+    .width(Length::Fixed(58.0))
+    .into()
+}
+
 fn channel_row<'a, M: Clone + 'a>(
     label: &'a str,
+    index: usize,
     value: u8,
-    on_change: impl Fn(u8) -> M + 'a,
+    on_message: impl Fn(PickerMessage) -> M + Clone + 'a,
 ) -> Element<'a, M> {
+    let on_slide = on_message.clone();
     row![
         small(label).width(Length::Fixed(14.0)),
-        slider(0..=255u8, value, on_change).width(Length::Fill),
-        text(value.to_string())
-            .size(FONT_SIZE_SMALL)
-            .color(text_secondary())
-            .width(Length::Fixed(28.0))
-            .align_x(iced::alignment::Horizontal::Right),
+        slider(0..=255u8, value, move |v| on_slide(match index {
+            0 => PickerMessage::Red(v),
+            1 => PickerMessage::Green(v),
+            _ => PickerMessage::Blue(v),
+        }))
+        .width(Length::Fill),
+        channel_input(index, value, on_message),
     ]
     .spacing(units(2))
     .align_y(Alignment::Center)
@@ -426,14 +457,14 @@ pub fn view<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let modes = row![
         choice(
-            "HSV",
-            picker.mode == PickerMode::Hsv,
-            on_message(PickerMessage::Mode(PickerMode::Hsv))
-        ),
-        choice(
             "RGB",
             picker.mode == PickerMode::Rgb,
             on_message(PickerMessage::Mode(PickerMode::Rgb))
+        ),
+        choice(
+            "HSV",
+            picker.mode == PickerMode::Hsv,
+            on_message(PickerMessage::Mode(PickerMode::Hsv))
         ),
     ]
     .spacing(units(2));
@@ -450,22 +481,33 @@ pub fn view<'a, M: Clone + 'a>(
             let bar = Canvas::new(HueBar { hue: picker.hue })
                 .width(Length::Fixed(BAR_WIDTH))
                 .height(Length::Fixed(AREA_HEIGHT));
-            row![
-                Element::from(area).map(on_message.clone()),
-                Element::from(bar).map(on_message.clone()),
+            let (r, g, b) = to_rgb8(picker.color());
+            column![
+                row![
+                    Element::from(area).map(on_message.clone()),
+                    Element::from(bar).map(on_message.clone()),
+                ]
+                .spacing(units(3)),
+                row![
+                    small("R"),
+                    channel_input(0, r, on_message.clone()),
+                    small("G"),
+                    channel_input(1, g, on_message.clone()),
+                    small("B"),
+                    channel_input(2, b, on_message.clone()),
+                ]
+                .spacing(units(2))
+                .align_y(Alignment::Center),
             ]
             .spacing(units(3))
             .into()
         }
         PickerMode::Rgb => {
             let (r, g, b) = to_rgb8(picker.color());
-            let on_red = on_message.clone();
-            let on_green = on_message.clone();
-            let on_blue = on_message.clone();
             column![
-                channel_row("R", r, move |v| on_red(PickerMessage::Red(v))),
-                channel_row("G", g, move |v| on_green(PickerMessage::Green(v))),
-                channel_row("B", b, move |v| on_blue(PickerMessage::Blue(v))),
+                channel_row("R", 0, r, on_message.clone()),
+                channel_row("G", 1, g, on_message.clone()),
+                channel_row("B", 2, b, on_message.clone()),
             ]
             .spacing(units(3))
             .width(Length::Fixed(AREA_WIDTH + BAR_WIDTH + units(3)))
@@ -578,6 +620,18 @@ mod tests {
         assert_eq!(to_rgb8(color), (200, 20, 30));
         assert_eq!(picker.mode, PickerMode::Rgb);
         assert_eq!(picker.hex, "#C8141E");
+    }
+
+    #[test]
+    fn starts_in_rgb_and_accepts_typed_channels() {
+        let mut picker = ColorPicker::new(Color::from_rgb8(10, 20, 30));
+        assert_eq!(picker.mode, PickerMode::Rgb);
+        let color = picker
+            .update(PickerMessage::ChannelTyped(1, "300".into()))
+            .unwrap();
+        assert_eq!(to_rgb8(color), (10, 255, 30));
+        assert_eq!(parse_channel(""), 0);
+        assert_eq!(parse_channel("0128"), 12);
     }
 
     #[test]
