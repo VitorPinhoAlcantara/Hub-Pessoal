@@ -82,6 +82,15 @@ icons! {
     Headphones => "fone",
     Monitor => "monitor",
     Game => "game",
+    Mic => "mic",
+    Smile => "smile",
+    Reply => "reply",
+    Forward => "forward",
+    Video => "video",
+    Download => "download",
+    MapPin => "map-pin",
+    Poll => "poll",
+    SidePanel => "side-panel",
 }
 
 static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| {

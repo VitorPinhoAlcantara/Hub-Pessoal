@@ -1,4 +1,5 @@
 pub mod agenda;
+pub mod audio;
 pub mod backup;
 pub mod channel;
 pub mod clock;

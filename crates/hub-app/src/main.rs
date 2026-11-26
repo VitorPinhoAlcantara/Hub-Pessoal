@@ -14,8 +14,8 @@ use hub_core::clock::SystemClock;
 use hub_core::config::Renderer;
 use hub_core::events::{EventBus, HubEvent};
 use hub_core::platform::ipc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use hub_core::{Config, Database, HubContext, HubPaths};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
@@ -75,9 +75,13 @@ fn notify_running_instance(path: &str, show: bool) -> bool {
         let Ok(mut stream) = ipc::connect(path).await else {
             return false;
         };
-        let line: &[u8] = if show { b"abrir
-" } else { b"
-" };
+        let line: &[u8] = if show {
+            b"abrir
+"
+        } else {
+            b"
+"
+        };
         let _ = stream.write_all(line).await;
         true
     })

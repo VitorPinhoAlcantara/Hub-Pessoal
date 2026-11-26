@@ -219,13 +219,18 @@ fn player_control_from_bus_reaches_player() {
 }
 
 #[test]
-fn whatsapp_tab_is_heavy_and_released_on_hide() {
-    let (mut app, _, _) = setup();
+fn whatsapp_tab_is_kept_for_a_while_after_hide() {
+    let (mut app, _, clock) = setup();
     let id = open(&mut app);
     let _ = app.update(Message::TabSelected(Tab::WhatsApp));
     assert!(app.whatsapp.is_some());
     let _ = app.view(id);
     let _ = app.update(Message::TabSelected(Tab::Agenda));
+    assert!(app.whatsapp.is_some());
+    let _ = app.update(Message::ReleaseIdle);
+    assert!(app.whatsapp.is_some());
+    clock.advance(TimeDelta::minutes(5));
+    let _ = app.update(Message::ReleaseIdle);
     assert!(app.whatsapp.is_none());
     assert!(app.ctx.whatsapp.get().is_none());
 }

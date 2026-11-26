@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: dependências do Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config xvfb
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libasound2-dev pkg-config xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -38,26 +38,3 @@ jobs:
         run: |
           export HUB_HOME="$(mktemp -d)"
           xvfb-run -a ./target/release/hub --smoke-test
-
-  sidecar:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: sidecars/whatsapp-bridge
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: sidecars/whatsapp-bridge/go.mod
-      - name: dependências
-        run: go mod tidy
-      - name: vet
-        run: go vet ./...
-      - name: test
-        run: go test ./...
-      - name: build
-        run: go build -o whatsapp-bridge${{ runner.os == 'Windows' && '.exe' || '' }} .

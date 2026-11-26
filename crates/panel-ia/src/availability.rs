@@ -98,6 +98,9 @@ async fn check_api(ai: &AiConfig) -> Availability {
         Ok(_) if ai.api_model.trim().is_empty() => {
             Availability::Problem("Servidor respondeu, falta informar o modelo".to_string())
         }
-        Ok(_) => Availability::Ready(format!("Servidor respondeu, modelo {}", ai.api_model.trim())),
+        Ok(_) => Availability::Ready(format!(
+            "Servidor respondeu, modelo {}",
+            ai.api_model.trim()
+        )),
     }
 }

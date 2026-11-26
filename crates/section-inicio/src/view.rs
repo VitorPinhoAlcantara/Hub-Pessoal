@@ -190,15 +190,13 @@ fn performance_card(section: &Home) -> Element<'_, Message> {
     let content = column![small("Desempenho"), rings]
         .spacing(units(2))
         .align_x(Alignment::Center);
-    clickable(
-        container(content)
-            .padding(units(3))
-            .width(PERFORMANCE_WIDTH)
-            .height(TOP_HEIGHT)
-            .center_x(PERFORMANCE_WIDTH)
-            .style(style::panel),
-        Message::Navigate(Destination::Performance),
-    )
+    container(content)
+        .padding(units(3))
+        .width(PERFORMANCE_WIDTH)
+        .height(TOP_HEIGHT)
+        .center_x(PERFORMANCE_WIDTH)
+        .style(style::panel)
+        .into()
 }
 
 fn agenda_row(item: &AgendaItem) -> Element<'_, Message> {

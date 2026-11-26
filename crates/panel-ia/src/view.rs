@@ -241,7 +241,10 @@ pub fn view(chat: &Chat) -> Element<'_, Message> {
         ]
         .spacing(units(2))
         .align_y(Alignment::Center),
-        small(format!("Usando {}. Troque em Configurações, aba IA.", chat.provider_label())),
+        small(format!(
+            "Usando {}. Troque em Configurações, aba IA.",
+            chat.provider_label()
+        )),
     ]
     .spacing(units(2));
 

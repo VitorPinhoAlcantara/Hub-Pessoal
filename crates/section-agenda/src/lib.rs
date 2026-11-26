@@ -380,9 +380,7 @@ impl Agenda {
         let card = self.card(id)?.clone();
         let mut items = Vec::new();
         if card.projected {
-            items.push(
-                MenuItem::new("Editar a rotina", Message::OpenCard(id)).icon(Icon::Edit),
-            );
+            items.push(MenuItem::new("Editar a rotina", Message::OpenCard(id)).icon(Icon::Edit));
             items.push(
                 MenuItem::new("Ver rotinas", Message::ScreenSelected(Screen::Routines))
                     .icon(Icon::Repeat),

@@ -31,7 +31,6 @@ pub enum Destination {
     Agenda,
     Shortcuts,
     Notes(Option<i64>),
-    Performance,
 }
 
 #[derive(Debug, Clone)]

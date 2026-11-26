@@ -17,6 +17,43 @@ pub fn icon<'a, M: 'a>(icon: Icon, size: f32, color: Color) -> Element<'a, M> {
         .into()
 }
 
+pub fn initials(name: &str) -> String {
+    let letters: String = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    if letters.is_empty() {
+        "?".to_string()
+    } else {
+        letters
+    }
+}
+
+pub fn avatar<'a, M: 'a>(
+    photo: Option<iced::widget::image::Handle>,
+    fallback: &str,
+    size: f32,
+    color: Color,
+) -> Element<'a, M> {
+    match photo {
+        Some(handle) => iced::widget::image(handle)
+            .width(size)
+            .height(size)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(size / 2.0)
+            .into(),
+        None => container(text(initials(fallback)).size(size * 0.38).color(color))
+            .width(size)
+            .height(size)
+            .center_x(size)
+            .center_y(size)
+            .style(style::round_badge(color))
+            .into(),
+    }
+}
+
 pub fn panel<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Container<'a, M> {
     container(content)
         .padding(units(4))
@@ -290,4 +327,17 @@ pub fn primary_icon_button<'a, M: Clone + 'a>(
     .padding([units(2), units(3)])
     .style(style::primary)
     .on_press_maybe(on_press)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initials_use_first_letters_of_two_words() {
+        assert_eq!(initials("ana paula souza"), "AP");
+        assert_eq!(initials("  carlos "), "C");
+        assert_eq!(initials("+55 11"), "51");
+        assert_eq!(initials(""), "?");
+    }
 }

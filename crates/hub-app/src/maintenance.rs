@@ -96,10 +96,10 @@ impl Maintenance {
                     return Outcome::None;
                 }
                 self.update = UpdateState::Checking;
-                let folder = ctx.config().update.update_folder();
+                let source = ctx.config().update.source();
                 return Outcome::Task(Task::perform(
                     blocking(move || {
-                        update::check(&folder, channel::VERSION).map_err(|e| e.to_string())
+                        update::check(&source, channel::VERSION).map_err(|e| e.to_string())
                     }),
                     move |result| Message::UpdateChecked { silent, result },
                 ));
@@ -247,7 +247,7 @@ impl Maintenance {
                     .align_y(Alignment::Center)
                     .into()
                 }
-                UpdateState::Installing => muted("Fazendo backup e iniciando o instalador").into(),
+                UpdateState::Installing => muted("Baixando e instalando a atualização").into(),
                 UpdateState::Failed(error) => row![
                     body(error.as_str()).color(danger()),
                     ghost_button(

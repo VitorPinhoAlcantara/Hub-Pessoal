@@ -470,7 +470,7 @@ fn routine_projections_appear_on_future_days() {
     assert_eq!(projected.title, "Treino");
     assert!(!projected.can_move());
     send(&mut agenda, [Message::OpenCard(projected.id)]);
-    assert_eq!(agenda.screen(), Screen::Routines);
+    assert!(agenda.editor().is_some());
 }
 
 #[test]

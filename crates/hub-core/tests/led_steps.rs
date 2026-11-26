@@ -29,9 +29,13 @@ async fn step() {
         let device = snapshot.devices.iter().find(|d| &d.name == name).unwrap();
         let started = Instant::now();
         let result = if let Some(hex) = action.strip_prefix("cor:") {
-            leds::paint(6742, Target::Name(name.clone()), leds::parse_color(hex).unwrap())
-                .await
-                .map(|_| ())
+            leds::paint(
+                6742,
+                Target::Name(name.clone()),
+                leds::parse_color(hex).unwrap(),
+            )
+            .await
+            .map(|_| ())
         } else if let Some(rest) = action.strip_prefix("efeito:") {
             let (wanted, level) = rest.split_once(':').unwrap();
             let index = device
@@ -43,7 +47,9 @@ async fn step() {
             let speed = mode.speed_from_level(level.parse().unwrap(), false);
             leds::set_mode(6742, Target::Name(name.clone()), index, Some(speed), None).await
         } else {
-            leds::turn_off(6742, Target::Name(name.clone())).await.map(|_| ())
+            leds::turn_off(6742, Target::Name(name.clone()))
+                .await
+                .map(|_| ())
         };
         println!("{name}: {:?} em {:?}", result, started.elapsed());
     }

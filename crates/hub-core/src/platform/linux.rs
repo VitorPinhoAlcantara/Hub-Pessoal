@@ -122,9 +122,14 @@ pub(super) fn set_autostart(exe: &Path, enabled: bool) -> Result<(), PlatformErr
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .ok_or(PlatformError::Unsupported("pasta de configuração do usuário"))?;
+        .ok_or(PlatformError::Unsupported(
+            "pasta de configuração do usuário",
+        ))?;
     let dir = config_home.join("autostart");
-    let file = dir.join(format!("{}.desktop", crate::channel::Channel::current().dir_name()));
+    let file = dir.join(format!(
+        "{}.desktop",
+        crate::channel::Channel::current().dir_name()
+    ));
     if !enabled {
         return match std::fs::remove_file(&file) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),

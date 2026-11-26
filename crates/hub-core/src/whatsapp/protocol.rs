@@ -1,250 +1,114 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireMention {
+    pub token: String,
+    pub jid: String,
+    pub name: String,
+}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireMessage {
     pub id: String,
     pub jid: String,
-    #[serde(default)]
     pub de: String,
-    #[serde(default)]
     pub nome_de: String,
-    #[serde(default)]
     pub texto: String,
-    #[serde(default)]
     pub minha: bool,
     pub em: i64,
-    #[serde(default = "default_kind")]
     pub tipo: String,
-    #[serde(default)]
     pub historico: bool,
-    #[serde(default)]
-    pub midia: String,
+    pub bruto: Vec<u8>,
+    pub autor_bruto: String,
+    pub citada_id: String,
+    pub citada_de: String,
+    pub citada_texto: String,
+    pub encaminhada: bool,
+    pub nome_arquivo: String,
+    pub mime: String,
+    pub duracao: u32,
+    pub tamanho: u64,
+    pub largura: u32,
+    pub altura: u32,
+    pub voz: bool,
+    pub mencoes: Vec<WireMention>,
 }
 
-fn default_kind() -> String {
-    "texto".to_string()
+impl Default for WireMessage {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            jid: String::new(),
+            de: String::new(),
+            nome_de: String::new(),
+            texto: String::new(),
+            minha: false,
+            em: 0,
+            tipo: "texto".to_string(),
+            historico: false,
+            bruto: Vec::new(),
+            autor_bruto: String::new(),
+            citada_id: String::new(),
+            citada_de: String::new(),
+            citada_texto: String::new(),
+            encaminhada: false,
+            nome_arquivo: String::new(),
+            mime: String::new(),
+            duracao: 0,
+            tamanho: 0,
+            largura: 0,
+            altura: 0,
+            voz: false,
+            mencoes: Vec::new(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireEdit {
+    pub jid: String,
+    pub id: String,
+    pub de: String,
+    pub minha: bool,
+    pub texto: String,
+    pub em: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireRevoke {
+    pub jid: String,
+    pub id: String,
+    pub de: String,
+    pub minha: bool,
+    pub admin: bool,
+    pub em: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireReaction {
+    pub jid: String,
+    pub id: String,
+    pub de: String,
+    pub minha: bool,
+    pub emoji: String,
+    pub em: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WireConversation {
     pub jid: String,
-    #[serde(default)]
     pub nome: String,
-    #[serde(default)]
     pub grupo: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WireChatInfo {
     pub jid: String,
-    #[serde(default, rename = "telefone")]
     pub phone: String,
-    #[serde(default)]
     pub nome: String,
-    #[serde(default)]
-    pub arquivada: bool,
+    pub arquivada: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireParticipant {
     pub jid: String,
-    #[serde(default)]
     pub nome: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Request {
-    Login,
-    ListConversations,
-    ListMessages { jid: String, limit: usize },
-    Send {
-        jid: String,
-        text: String,
-        mentions: Vec<String>,
-    },
-    Participants { jid: String },
-    SendFile { jid: String, path: String, caption: String },
-    ChatInfo { jids: Vec<String> },
-    DownloadMedia { id: String, media: String },
-    Shutdown,
-}
-
-pub fn encode(request: &Request, id: u64) -> String {
-    let value = match request {
-        Request::Login => json!({ "id": id, "cmd": "login" }),
-        Request::ListConversations => json!({ "id": id, "cmd": "listar_conversas" }),
-        Request::ListMessages { jid, limit } => {
-            json!({ "id": id, "cmd": "listar_mensagens", "jid": jid, "limite": limit })
-        }
-        Request::Send {
-            jid,
-            text,
-            mentions,
-        } => {
-            json!({ "id": id, "cmd": "enviar", "jid": jid, "texto": text, "jids": mentions })
-        }
-        Request::Participants { jid } => json!({ "id": id, "cmd": "participantes", "jid": jid }),
-        Request::SendFile { jid, path, caption } => {
-            json!({ "id": id, "cmd": "enviar_arquivo", "jid": jid, "caminho": path, "texto": caption })
-        }
-        Request::ChatInfo { jids } => json!({ "id": id, "cmd": "info_conversas", "jids": jids }),
-        Request::DownloadMedia { id: message, media } => {
-            json!({ "id": id, "cmd": "baixar_midia", "mensagem_id": message, "midia": media })
-        }
-        Request::Shutdown => json!({ "id": id, "cmd": "encerrar" }),
-    };
-    format!("{value}\n")
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Incoming {
-    Response {
-        id: u64,
-        result: Result<Value, String>,
-    },
-    Qr(String),
-    Connected(String),
-    Message(WireMessage),
-    Disconnected(String),
-    Archived {
-        jid: String,
-        archived: bool,
-    },
-    Error(String),
-}
-
-pub fn parse(line: &str) -> Option<Incoming> {
-    let value: Value = serde_json::from_str(line.trim()).ok()?;
-    if let Some(id) = value.get("id").and_then(Value::as_u64)
-        && value.get("ok").is_some()
-    {
-        let result = if value["ok"].as_bool().unwrap_or(false) {
-            Ok(value.get("dados").cloned().unwrap_or(Value::Null))
-        } else {
-            Err(value
-                .get("erro")
-                .and_then(Value::as_str)
-                .unwrap_or("erro desconhecido no WhatsApp")
-                .to_string())
-        };
-        return Some(Incoming::Response { id, result });
-    }
-    let text = |key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    match value.get("evento").and_then(Value::as_str)? {
-        "qr" => Some(Incoming::Qr(text("codigo"))),
-        "conectado" => Some(Incoming::Connected(text("jid"))),
-        "mensagem_recebida" => {
-            let mut message: WireMessage =
-                serde_json::from_value(value.get("mensagem")?.clone()).ok()?;
-            if value.get("historico").and_then(Value::as_bool) == Some(true) {
-                message.historico = true;
-            }
-            Some(Incoming::Message(message))
-        }
-        "desconectado" => Some(Incoming::Disconnected(text("motivo"))),
-        "arquivada" => Some(Incoming::Archived {
-            jid: text("jid"),
-            archived: value.get("arquivada").and_then(Value::as_bool)?,
-        }),
-        "erro" => Some(Incoming::Error(text("mensagem"))),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requests_are_json_lines() {
-        let line = encode(
-            &Request::Send {
-                jid: "5511@s.whatsapp.net".into(),
-                text: "oi".into(),
-                mentions: vec!["9@s.whatsapp.net".into()],
-            },
-            9,
-        );
-        assert!(line.ends_with('\n'));
-        let value: Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(value["cmd"], "enviar");
-        assert_eq!(value["id"], 9);
-        assert_eq!(value["texto"], "oi");
-        assert_eq!(value["jids"][0], "9@s.whatsapp.net");
-        let list: Value = serde_json::from_str(
-            encode(
-                &Request::ListMessages {
-                    jid: "x".into(),
-                    limit: 50,
-                },
-                1,
-            )
-            .trim(),
-        )
-        .unwrap();
-        assert_eq!(list["limite"], 50);
-    }
-
-    #[test]
-    fn responses_and_events_are_parsed() {
-        assert_eq!(
-            parse(r#"{"id":3,"ok":true,"dados":[1]}"#),
-            Some(Incoming::Response {
-                id: 3,
-                result: Ok(json!([1]))
-            })
-        );
-        assert_eq!(
-            parse(r#"{"id":4,"ok":false,"erro":"sem sessão"}"#),
-            Some(Incoming::Response {
-                id: 4,
-                result: Err("sem sessão".into())
-            })
-        );
-        assert_eq!(
-            parse(r#"{"evento":"qr","codigo":"2@abc"}"#),
-            Some(Incoming::Qr("2@abc".into()))
-        );
-        assert_eq!(
-            parse(r#"{"evento":"desconectado","motivo":"sessao_encerrada"}"#),
-            Some(Incoming::Disconnected("sessao_encerrada".into()))
-        );
-        let Some(Incoming::Message(message)) = parse(
-            r#"{"evento":"mensagem_recebida","historico":true,"mensagem":{"id":"A1","jid":"g@g.us","de":"5511@s.whatsapp.net","nome_de":"Ana","texto":"oi","minha":false,"em":1792627000,"tipo":"texto"}}"#,
-        ) else {
-            panic!("esperava mensagem")
-        };
-        assert_eq!(message.nome_de, "Ana");
-        assert!(message.historico);
-        assert_eq!(
-            parse(r#"{"evento":"arquivada","jid":"1@s.whatsapp.net","arquivada":false}"#),
-            Some(Incoming::Archived {
-                jid: "1@s.whatsapp.net".into(),
-                archived: false
-            })
-        );
-        assert!(parse(r#"{"evento":"arquivada","jid":"x"}"#).is_none());
-        let info: Value = serde_json::from_str(
-            encode(
-                &Request::DownloadMedia {
-                    id: "A1".into(),
-                    media: "Zm9v".into(),
-                },
-                2,
-            )
-            .trim(),
-        )
-        .unwrap();
-        assert_eq!(info["cmd"], "baixar_midia");
-        assert_eq!(info["mensagem_id"], "A1");
-        assert!(parse("lixo").is_none());
-        assert!(parse(r#"{"evento":"desconhecido"}"#).is_none());
-    }
 }

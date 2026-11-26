@@ -443,9 +443,7 @@ async fn whatsapp_read_uses_stored_messages_and_send_needs_open_tab() {
             texto: "chego às 8".into(),
             minha: false,
             em: 1_792_627_000,
-            tipo: "texto".into(),
-            historico: false,
-            midia: String::new(),
+            ..Default::default()
         };
         hub_core::whatsapp::store_message(db.conn(), &hub_core::whatsapp::wire_to_message(&wire))
             .unwrap();
@@ -973,9 +971,7 @@ async fn whatsapp_conversations_are_listed_and_aliased() {
                 texto: text.into(),
                 minha: false,
                 em: 1_792_627_000,
-                tipo: "texto".into(),
-                historico: false,
-                midia: String::new(),
+                ..Default::default()
             };
             hub_core::whatsapp::store_message(
                 db.conn(),
@@ -1305,6 +1301,13 @@ async fn api_exposes_tools_as_endpoints() {
     assert!(listed.contains("\"resultado\""));
     let unknown = http(&fixture.server, "POST", "/api/nao_existe", &token, "{}").await;
     assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
-    let denied = http(&fixture.server, "POST", "/api/agenda_listar", "errado", "{}").await;
+    let denied = http(
+        &fixture.server,
+        "POST",
+        "/api/agenda_listar",
+        "errado",
+        "{}",
+    )
+    .await;
     assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
 }

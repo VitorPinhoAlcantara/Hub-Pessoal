@@ -36,7 +36,11 @@ fn failure<'a>(section: &'a Peripherals, reason: &'a str) -> Element<'a, Message
         actions = actions.push(primary_button("Abrir OpenRGB", Some(Message::OpenOpenRgb)));
     } else {
         actions = actions.push(primary_button(
-            if section.installing() { "Instalando" } else { "Instalar OpenRGB" },
+            if section.installing() {
+                "Instalando"
+            } else {
+                "Instalar OpenRGB"
+            },
             (!section.installing()).then_some(Message::InstallOpenRgb),
         ));
     }
@@ -114,7 +118,10 @@ fn card<'a>(
             ]
             .spacing(2)
             .width(Length::Fill),
-            container(space()).width(12).height(12).style(style::dot(color)),
+            container(space())
+                .width(12)
+                .height(12)
+                .style(style::dot(color)),
         ]
         .spacing(units(3))
         .align_y(Alignment::Center),
@@ -172,7 +179,9 @@ fn device_list<'a>(section: &'a Peripherals, snapshot: &'a Snapshot) -> Element<
     }));
     cards
         .into_iter()
-        .fold(Column::new().spacing(units(2)), |list, card| list.push(card))
+        .fold(Column::new().spacing(units(2)), |list, card| {
+            list.push(card)
+        })
         .width(LIST_WIDTH)
         .into()
 }
@@ -278,7 +287,8 @@ fn profile_choices<'a>(
 
 fn profiles<'a>(section: &'a Peripherals, snapshot: &'a Snapshot) -> Element<'a, Message> {
     let config = section.leds_config();
-    let mut header = row![heading("Perfis"), space().width(Length::Fill)].align_y(Alignment::Center);
+    let mut header =
+        row![heading("Perfis"), space().width(Length::Fill)].align_y(Alignment::Center);
     if section.openrgb().is_some() {
         header = header.push(ghost_button("Abrir OpenRGB", Some(Message::ShowOpenRgb)));
     }

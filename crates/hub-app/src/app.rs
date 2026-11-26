@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use hub_core::HubContext;
 use hub_core::agenda::Reminder;
-use hub_core::chrono::NaiveDateTime;
+use hub_core::chrono::{NaiveDateTime, TimeDelta};
 use hub_core::confirm::ConfirmRequest;
 use hub_core::events::HubEvent;
 use hub_core::platform::{self, MediaCommand, TrayEvent, TrayImage, TrayMenuState, WindowDrag};
@@ -19,9 +19,8 @@ use iced::{Event, Point, Vector, event, mouse};
 use section_agenda::Agenda;
 use section_atalhos::Shortcuts;
 use section_inicio::{Destination, Home};
-use section_desempenho::Performance;
-use section_perifericos::Peripherals;
 use section_notas::Notes;
+use section_perifericos::Peripherals;
 use section_scripts::Scripts;
 use section_whatsapp::WhatsApp;
 use std::sync::Arc;
@@ -49,12 +48,12 @@ pub enum Tab {
     Shortcuts,
     WhatsApp,
     Notes,
-    Performance,
     Peripherals,
     Settings,
 }
 
 const GAME_MODE_MUTE_HOURS: u32 = 24;
+const WHATSAPP_KEEP: TimeDelta = TimeDelta::minutes(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
@@ -65,13 +64,12 @@ pub enum SettingsTab {
 }
 
 impl Tab {
-    pub const SECTIONS: [Tab; 8] = [
+    pub const SECTIONS: [Tab; 7] = [
         Tab::Home,
         Tab::Agenda,
         Tab::Shortcuts,
         Tab::WhatsApp,
         Tab::Notes,
-        Tab::Performance,
         Tab::Peripherals,
         Tab::Scripts,
     ];
@@ -83,7 +81,6 @@ impl Tab {
             Tab::Home => "Início",
             Tab::Shortcuts => "Atalhos",
             Tab::Notes => "Anotações",
-            Tab::Performance => "Desempenho",
             Tab::Peripherals => "Periféricos",
             Tab::WhatsApp => "WhatsApp",
             Tab::Settings => "Configurações",
@@ -92,6 +89,7 @@ impl Tab {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     WindowOpened(window::Id),
     WindowClosed(window::Id),
@@ -101,7 +99,6 @@ pub enum Message {
     Scripts(section_scripts::Message),
     Shortcuts(section_atalhos::Message),
     Notes(section_notas::Message),
-    Performance(section_desempenho::Message),
     Peripherals(section_perifericos::Message),
     Home(section_inicio::Message),
     WhatsApp(section_whatsapp::Message),
@@ -155,6 +152,7 @@ pub enum Message {
     AiChecked(AiProviderKind, Availability),
     OpenPersonalization,
     SmokeStep(usize),
+    ReleaseIdle,
 }
 
 pub struct App {
@@ -167,7 +165,6 @@ pub struct App {
     pub scripts: Option<Scripts>,
     pub shortcuts: Option<Shortcuts>,
     pub notes: Option<Notes>,
-    pub performance: Option<Performance>,
     pub peripherals: Option<Peripherals>,
     pub home: Option<Home>,
     pub terminal: Option<panel_terminal::Terminal>,
@@ -199,6 +196,8 @@ pub struct App {
     pub wallpaper: Option<appearance::WallpaperFrame>,
     pub wallpaper_generation: u64,
     pub raw_window: Option<u64>,
+    pub whatsapp_hidden_at: Option<NaiveDateTime>,
+    pub whatsapp_stale: bool,
 }
 
 pub fn run(ctx: HubContext, options: Options) -> iced::Result {
@@ -297,7 +296,6 @@ impl App {
             scripts: None,
             shortcuts: None,
             notes: None,
-            performance: None,
             peripherals: None,
             home: None,
             terminal: None,
@@ -329,6 +327,8 @@ impl App {
             wallpaper: None,
             wallpaper_generation: 0,
             raw_window: None,
+            whatsapp_hidden_at: None,
+            whatsapp_stale: false,
         };
         if app.tray_available {
             app.refresh_tray();
@@ -372,9 +372,6 @@ impl App {
                     section.on_hide();
                 }
             }
-            Tab::Performance => {
-                self.performance = None;
-            }
             Tab::Peripherals => {
                 self.peripherals = None;
             }
@@ -386,8 +383,8 @@ impl App {
             Tab::WhatsApp => {
                 if let Some(section) = &mut self.whatsapp {
                     section.on_hide();
+                    self.whatsapp_hidden_at = Some(self.ctx.clock.now());
                 }
-                self.whatsapp = None;
             }
             Tab::Settings => {}
         }
@@ -401,10 +398,10 @@ impl App {
         self.scripts = None;
         self.shortcuts = None;
         self.notes = None;
-        self.performance = None;
         self.peripherals = None;
         self.home = None;
         self.whatsapp = None;
+        self.whatsapp_hidden_at = None;
         if let Some(chat) = &mut self.chat {
             chat.on_hide();
         }
@@ -430,9 +427,6 @@ impl App {
             Tab::Notes if self.notes.is_none() => {
                 self.notes = Some(Notes::new(self.ctx.clone()));
             }
-            Tab::Performance if self.performance.is_none() => {
-                self.performance = Some(Performance::new());
-            }
             Tab::Peripherals if self.peripherals.is_none() => {
                 self.peripherals = Some(Peripherals::new(self.ctx.clone()));
             }
@@ -440,10 +434,11 @@ impl App {
                 self.home = Some(Home::new(self.ctx.clone()));
             }
             Tab::WhatsApp if self.whatsapp.is_none() => {
-                if !self.options.smoke_test {
+                if !self.options.smoke_test && !cfg!(test) {
                     self.ctx.whatsapp.start(&self.ctx);
                 }
                 self.whatsapp = Some(WhatsApp::new(self.ctx.clone()));
+                self.whatsapp_stale = false;
             }
             _ => {}
         }
@@ -485,7 +480,6 @@ impl App {
         match destination {
             Destination::Agenda => self.select_tab(Tab::Agenda),
             Destination::Shortcuts => self.select_tab(Tab::Shortcuts),
-            Destination::Performance => self.select_tab(Tab::Performance),
             Destination::Notes(note) => {
                 self.select_tab(Tab::Notes);
                 if let (Some(id), Some(notes)) = (note, &mut self.notes) {
@@ -504,6 +498,29 @@ impl App {
         }
         self.tab = tab;
         self.ensure_section(tab);
+    }
+
+    fn show_whatsapp(&mut self) -> Task<Message> {
+        self.whatsapp_hidden_at = None;
+        if !std::mem::take(&mut self.whatsapp_stale) {
+            return Task::none();
+        }
+        match &mut self.whatsapp {
+            Some(whatsapp) => whatsapp
+                .update(section_whatsapp::Message::Refresh)
+                .map(Message::WhatsApp),
+            None => Task::none(),
+        }
+    }
+
+    fn release_idle(&mut self) {
+        let expired = self
+            .whatsapp_hidden_at
+            .is_some_and(|at| self.ctx.clock.now() - at >= WHATSAPP_KEEP);
+        if expired && self.tab != Tab::WhatsApp {
+            self.whatsapp = None;
+            self.whatsapp_hidden_at = None;
+        }
     }
 
     fn save_appearance(&mut self) {
@@ -651,6 +668,9 @@ impl App {
                 if fresh {
                     return Task::done(Message::Peripherals(section_perifericos::Message::Retry));
                 }
+                if tab == Tab::WhatsApp {
+                    return self.show_whatsapp();
+                }
             }
             Message::Agenda(message) => {
                 if let Some(agenda) = &mut self.agenda {
@@ -680,11 +700,6 @@ impl App {
                     return peripherals.update(message).map(Message::Peripherals);
                 }
             }
-            Message::Performance(message) => {
-                if let Some(performance) = &mut self.performance {
-                    return performance.update(message).map(Message::Performance);
-                }
-            }
             Message::Shortcuts(message) => {
                 if let Some(shortcuts) = &mut self.shortcuts {
                     return shortcuts.update(message).map(Message::Shortcuts);
@@ -695,6 +710,7 @@ impl App {
                     return whatsapp.update(message).map(Message::WhatsApp);
                 }
             }
+            Message::ReleaseIdle => self.release_idle(),
             Message::ScheduledRun(id, event) => {
                 if let Some(scripts) = &mut self.scripts {
                     let message = section_scripts::Message::External(id, Origin::Scheduled, event);
@@ -1122,6 +1138,10 @@ impl App {
             }
             HubEvent::PlayerControl(command) => return self.player_control(command),
             HubEvent::WhatsAppChanged => {
+                if self.tab != Tab::WhatsApp {
+                    self.whatsapp_stale = self.whatsapp.is_some();
+                    return Task::none();
+                }
                 if let Some(whatsapp) = &mut self.whatsapp {
                     return whatsapp
                         .update(section_whatsapp::Message::Refresh)
@@ -1147,7 +1167,8 @@ impl App {
                 self.tab = Tab::WhatsApp;
                 self.ensure_section(Tab::WhatsApp);
                 if let Some(whatsapp) = &mut self.whatsapp {
-                    whatsapp.open_conversation(jid);
+                    let open = whatsapp.open_conversation(jid).map(Message::WhatsApp);
+                    return Task::batch([open, self.open_window()]);
                 }
                 return self.open_window();
             }
@@ -1212,7 +1233,6 @@ impl App {
             Tab::Shortcuts,
             Tab::WhatsApp,
             Tab::Notes,
-            Tab::Performance,
             Tab::Peripherals,
             Tab::Settings,
             Tab::Home,
@@ -1290,10 +1310,6 @@ impl App {
                     .notes
                     .as_ref()
                     .map(|s| s.subscription().map(Message::Notes)),
-                Tab::Performance => self
-                    .performance
-                    .as_ref()
-                    .map(|s| s.subscription().map(Message::Performance)),
                 Tab::Peripherals => self
                     .peripherals
                     .as_ref()
@@ -1309,6 +1325,10 @@ impl App {
                 Tab::Settings => None,
             };
             subscriptions.extend(section);
+        }
+        if self.whatsapp_hidden_at.is_some() {
+            subscriptions
+                .push(iced::time::every(Duration::from_secs(60)).map(|_| Message::ReleaseIdle));
         }
         Subscription::batch(subscriptions)
     }

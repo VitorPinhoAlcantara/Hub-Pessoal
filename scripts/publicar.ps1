@@ -22,11 +22,6 @@ Write-Host "Publicando a versão $Versao"
 $destino = Join-Path $raiz "target\distribuicao\release"
 New-Item -ItemType Directory -Force $destino | Out-Null
 
-Push-Location (Join-Path $raiz "sidecars\whatsapp-bridge")
-go build -o (Join-Path $destino "whatsapp-bridge.exe") .
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Falha ao compilar o sidecar" }
-Pop-Location
-
 cargo build --release -p hub-app --features distribuicao --target-dir target\distribuicao
 if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar o hub" }
 Copy-Item (Join-Path $destino "hub.exe") (Join-Path $destino "HubPessoal.exe") -Force
@@ -57,3 +52,6 @@ $json = $manifesto | ConvertTo-Json
 Get-ChildItem $Pasta -Filter "HubPessoal-*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 3 | Remove-Item -Force
 
 Write-Host "Pronto: $nome em $Pasta"
+Write-Host ""
+Write-Host "Depois de enviar o commit da versão $Versao para a main, crie a release:"
+Write-Host "gh release create v$Versao `"$(Join-Path $Pasta $nome)`" `"$(Join-Path $Pasta 'ultima.json')`" --target main --title `"Hub Pessoal $Versao`" --generate-notes"

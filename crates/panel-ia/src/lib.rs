@@ -25,7 +25,8 @@ pub use openai::OpenAiCompatible;
 pub use provider::{AiEvent, AiProvider, AiRequest, AttachmentInput, ClaudeCli, McpEndpoint};
 
 pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-pub const NO_ANSWER: &str = "A IA terminou sem responder. Confira o provedor em Configurações, aba IA.";
+pub const NO_ANSWER: &str =
+    "A IA terminou sem responder. Confira o provedor em Configurações, aba IA.";
 pub const IDLE_ANSWER: &str = "A IA ficou 3 minutos sem dar sinal e a espera foi encerrada. Confira a conexão e o provedor em Configurações, aba IA.";
 
 pub fn with_idle_timeout(

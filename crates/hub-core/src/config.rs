@@ -320,15 +320,13 @@ impl Default for UpdateConfig {
 }
 
 impl UpdateConfig {
-    pub fn update_folder(&self) -> PathBuf {
+    pub fn source(&self) -> crate::update::UpdateSource {
         let configured = self.folder.trim();
-        if !configured.is_empty() {
-            return PathBuf::from(configured);
+        if configured.is_empty() {
+            crate::update::UpdateSource::GitHub
+        } else {
+            crate::update::UpdateSource::Folder(configured.into())
         }
-        let base = directories::UserDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .unwrap_or_default();
-        base.join("HubPessoal").join("atualizacoes")
     }
 }
 

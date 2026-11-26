@@ -210,7 +210,6 @@ fn navigate_does_not_change_state() {
         Destination::Shortcuts,
         Destination::Notes(Some(3)),
         Destination::Notes(None),
-        Destination::Performance,
     ] {
         let _ = home.update(Message::Navigate(destination));
     }

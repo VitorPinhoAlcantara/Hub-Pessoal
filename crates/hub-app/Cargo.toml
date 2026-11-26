@@ -20,7 +20,6 @@ section-agenda.workspace = true
 section-scripts.workspace = true
 section-atalhos.workspace = true
 section-notas.workspace = true
-section-desempenho.workspace = true
 section-perifericos.workspace = true
 section-inicio.workspace = true
 panel-terminal.workspace = true
@@ -44,7 +43,6 @@ binaries-dir = "../../target/distribuicao/release"
 formats = ["nsis"]
 icons = ["../../assets/app/hub.png", "../../assets/app/hub.ico"]
 binaries = [{ path = "HubPessoal", main = true }]
-resources = ["../../target/distribuicao/release/whatsapp-bridge.exe"]
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"

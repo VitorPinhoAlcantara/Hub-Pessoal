@@ -15,7 +15,7 @@ const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
 const STAMP_LEN: usize = 15;
 const MANIFEST_NAME: &str = "manifesto.json";
 const PENDING_FILE: &str = "restaurar.pendente";
-const DATABASES: [&str; 2] = ["hub.db", "whatsapp-sessao.db"];
+const DATABASES: [&str; 2] = ["hub.db", "whatsapp-motor.db"];
 const KEEP_UPDATE: usize = 3;
 const KEEP_BEFORE_RESTORE: usize = 3;
 

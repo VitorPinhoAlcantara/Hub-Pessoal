@@ -1,4 +1,4 @@
-use iced::widget::{button, checkbox, container, scrollable, svg, text_editor, text_input};
+use iced::widget::{button, checkbox, container, scrollable, slider, svg, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 
 use crate::tokens::{self, *};
@@ -398,5 +398,37 @@ pub fn grip(_theme: &Theme) -> container::Style {
         background: Some(Background::Color(border_subtle())),
         border: border(Color::TRANSPARENT, 0.0, 2.0),
         ..container::Style::default()
+    }
+}
+
+pub fn round_badge(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(alpha(color, 0.18))),
+        text_color: Some(color),
+        border: border(Color::TRANSPARENT, 0.0, 999.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn seek(_theme: &Theme, status: slider::Status) -> slider::Style {
+    let radius = match status {
+        slider::Status::Hovered | slider::Status::Dragged => 7.0,
+        slider::Status::Active => 5.0,
+    };
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                Background::Color(accent()),
+                Background::Color(border_subtle()),
+            ),
+            width: 4.0,
+            border: border(Color::TRANSPARENT, 0.0, 2.0),
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius },
+            background: Background::Color(accent()),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
     }
 }

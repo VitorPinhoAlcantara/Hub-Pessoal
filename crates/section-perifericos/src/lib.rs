@@ -191,7 +191,12 @@ impl Peripherals {
     }
 
     pub fn speed_inverted(&self, name: &str) -> bool {
-        self.ctx.config().leds.inverted_speed.iter().any(|n| n == name)
+        self.ctx
+            .config()
+            .leds
+            .inverted_speed
+            .iter()
+            .any(|n| n == name)
     }
 
     pub fn device_speed(&self, name: &str) -> Option<u32> {
@@ -259,7 +264,11 @@ impl Section for Peripherals {
                 };
                 let port = self.port();
                 return Task::perform(
-                    async move { leds::turn_off(port, target).await.map_err(|e| e.to_string()) },
+                    async move {
+                        leds::turn_off(port, target)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     Message::Painted,
                 );
             }
@@ -278,7 +287,8 @@ impl Section for Peripherals {
             }
             Message::InstallOpenRgb => {
                 self.installing = true;
-                self.notice = Some("Instalando o OpenRGB pelo winget, pode levar alguns minutos".to_string());
+                self.notice =
+                    Some("Instalando o OpenRGB pelo winget, pode levar alguns minutos".to_string());
                 return Task::perform(leds::install_openrgb(), Message::Installed);
             }
             Message::Installed(result) => {
@@ -338,7 +348,9 @@ impl Section for Peripherals {
                 return self.choose_color(focus, color);
             }
             Message::Picker(message) => {
-                if let (Some(color), Some(focus)) = (self.picker.update(message), self.focus.clone()) {
+                if let (Some(color), Some(focus)) =
+                    (self.picker.update(message), self.focus.clone())
+                {
                     return self.choose_color(focus, color);
                 }
             }

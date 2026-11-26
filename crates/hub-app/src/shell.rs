@@ -72,7 +72,6 @@ fn active_menu(app: &App) -> Option<ContextMenu<Message>> {
             .and_then(|s| s.context_menu())
             .map(|m| m.map(Message::Notes)),
         Tab::Home => None,
-        Tab::Performance => None,
         Tab::Peripherals => None,
         Tab::WhatsApp => app
             .whatsapp
@@ -194,7 +193,6 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             Tab::Scripts => Icon::Scripts,
             Tab::Shortcuts => Icon::Shortcuts,
             Tab::Notes => Icon::Notes,
-            Tab::Performance => Icon::Performance,
             Tab::Peripherals => Icon::Peripherals,
             Tab::Home => Icon::Home,
             Tab::WhatsApp => Icon::WhatsApp,
@@ -238,10 +236,6 @@ fn main_area(app: &App) -> Element<'_, Message> {
         },
         Tab::Notes => match &app.notes {
             Some(notes) => notes.view().map(Message::Notes),
-            None => panel(muted("Carregando")).into(),
-        },
-        Tab::Performance => match &app.performance {
-            Some(performance) => performance.view().map(Message::Performance),
             None => panel(muted("Carregando")).into(),
         },
         Tab::Peripherals => match &app.peripherals {
@@ -385,39 +379,41 @@ fn ai_settings(app: &App) -> Element<'_, Message> {
     use hub_core::config::AiProviderKind;
     use panel_ia::Availability;
     let config = app.ctx.config();
-    let providers = AiProviderKind::ALL.into_iter().fold(
-        Column::new().spacing(units(3)),
-        |col, kind| {
-            let status = app
-                .ai_status
-                .iter()
-                .find(|(k, _)| *k == kind)
-                .map(|(_, a)| a.clone())
-                .unwrap_or(Availability::Checking);
-            let (label, color) = match &status {
-                Availability::Checking => ("Verificando".to_string(), text_secondary()),
-                Availability::Ready(detail) => (detail.clone(), success()),
-                Availability::Missing(detail) => (detail.clone(), danger()),
-                Availability::Problem(detail) => (detail.clone(), warning()),
-            };
-            let selected = config.ai.provider == kind;
-            let pick = button(text(kind.label()).size(FONT_SIZE))
-                .padding([units(1) + 2.0, units(3)])
-                .width(200)
-                .style(style::toggle(selected))
-                .on_press_maybe((status.usable() && !selected).then_some(Message::AiProvider(kind)));
-            let mut item = column![
-                row![pick, small(label).color(color)]
-                    .spacing(units(3))
-                    .align_y(Alignment::Center)
-            ]
-            .spacing(units(1));
-            if !matches!(status, Availability::Ready(_) | Availability::Checking) {
-                item = item.push(muted(panel_ia::availability::install_hint(kind)));
-            }
-            col.push(item)
-        },
-    );
+    let providers =
+        AiProviderKind::ALL
+            .into_iter()
+            .fold(Column::new().spacing(units(3)), |col, kind| {
+                let status = app
+                    .ai_status
+                    .iter()
+                    .find(|(k, _)| *k == kind)
+                    .map(|(_, a)| a.clone())
+                    .unwrap_or(Availability::Checking);
+                let (label, color) = match &status {
+                    Availability::Checking => ("Verificando".to_string(), text_secondary()),
+                    Availability::Ready(detail) => (detail.clone(), success()),
+                    Availability::Missing(detail) => (detail.clone(), danger()),
+                    Availability::Problem(detail) => (detail.clone(), warning()),
+                };
+                let selected = config.ai.provider == kind;
+                let pick = button(text(kind.label()).size(FONT_SIZE))
+                    .padding([units(1) + 2.0, units(3)])
+                    .width(200)
+                    .style(style::toggle(selected))
+                    .on_press_maybe(
+                        (status.usable() && !selected).then_some(Message::AiProvider(kind)),
+                    );
+                let mut item = column![
+                    row![pick, small(label).color(color)]
+                        .spacing(units(3))
+                        .align_y(Alignment::Center)
+                ]
+                .spacing(units(1));
+                if !matches!(status, Availability::Ready(_) | Availability::Checking) {
+                    item = item.push(muted(panel_ia::availability::install_hint(kind)));
+                }
+                col.push(item)
+            });
     let field = |label: &'static str, input: Element<'static, Message>| {
         row![muted(label).width(200), input]
             .spacing(units(3))

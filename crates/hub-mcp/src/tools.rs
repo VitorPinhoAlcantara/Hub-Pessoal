@@ -1152,7 +1152,9 @@ impl HubTools {
         if !approved {
             return Err("o usuário recusou ou não respondeu a tempo".to_string());
         }
-        let sent = handle.send_text(&conversation.jid, &texto).await?;
+        let sent = handle
+            .send_text(&conversation.jid, &texto, Vec::new(), None)
+            .await?;
         let message = whatsapp::wire_to_message(&sent);
         whatsapp::store_message(self.ctx.db().conn(), &message).map_err(|e| e.to_string())?;
         self.ctx.events.publish(HubEvent::WhatsAppChanged);
@@ -1186,7 +1188,9 @@ impl HubTools {
         if !approved {
             return Err("o usuário recusou ou não respondeu a tempo".to_string());
         }
-        let sent = handle.send_file(&conversation.jid, &path, &caption).await?;
+        let sent = handle
+            .send_file(&conversation.jid, &path, &caption, None)
+            .await?;
         let message = whatsapp::wire_to_message(&sent);
         whatsapp::store_message(self.ctx.db().conn(), &message).map_err(|e| e.to_string())?;
         self.ctx.events.publish(HubEvent::WhatsAppChanged);
@@ -1333,12 +1337,8 @@ impl HubTools {
         &self,
         Parameters(request): Parameters<IdRequest>,
     ) -> Result<String, String> {
-        agenda::set_task_missed(
-            self.ctx.db().conn(),
-            request.id,
-            Some(self.ctx.clock.now()),
-        )
-        .map_err(err)?;
+        agenda::set_task_missed(self.ctx.db().conn(), request.id, Some(self.ctx.clock.now()))
+            .map_err(err)?;
         self.agenda_changed();
         Ok(format!("Tarefa {} marcada como perdida", request.id))
     }
@@ -2120,10 +2120,14 @@ impl HubTools {
                 })
             })
             .collect();
-        Ok(text(&json!({ "dispositivos": devices, "perfis": snapshot.profiles })))
+        Ok(text(
+            &json!({ "dispositivos": devices, "perfis": snapshot.profiles }),
+        ))
     }
 
-    #[tool(description = "Define uma cor sólida em um dispositivo de LED (pelo nome) ou em todos (use todos)")]
+    #[tool(
+        description = "Define uma cor sólida em um dispositivo de LED (pelo nome) ou em todos (use todos)"
+    )]
     async fn leds_cor(
         &self,
         Parameters(request): Parameters<LedColorRequest>,

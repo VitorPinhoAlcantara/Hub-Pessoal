@@ -534,7 +534,8 @@ impl Client {
             .ok_or_else(|| LedError::Invalid(format!("{} não aceita cor sólida", device.name)))?;
         let base = &device.modes[index];
         if !base.per_led() {
-            self.send_mode(device, index, &with_color(base, color)).await?;
+            self.send_mode(device, index, &with_color(base, color))
+                .await?;
             return self.sync().await;
         }
         let mut mode = base.clone();
@@ -741,7 +742,11 @@ pub async fn install_openrgb() -> Result<(), String> {
         return Ok(());
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+    let last = text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default();
     Err(format!("o winget não conseguiu instalar ({})", last.trim()))
 }
 

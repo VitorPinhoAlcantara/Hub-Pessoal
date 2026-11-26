@@ -284,8 +284,8 @@ impl AiProvider for ClaudeCli {
             "Confira se o comando claude está instalado e logado.",
             move |line| parser.parse(line),
         )
-            .into_stream()
-            .filter_map(|_| async { None });
+        .into_stream()
+        .filter_map(|_| async { None });
         futures::stream::select(driver, rx).boxed()
     }
 }
