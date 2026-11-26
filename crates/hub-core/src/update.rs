@@ -11,6 +11,7 @@ use crate::paths::HubPaths;
 use crate::platform::{self, PlatformError};
 
 pub const MANIFEST_FILE: &str = "ultima.json";
+pub const RELEASE_MANIFEST: &str = "HubPessoal-atualizacao.json";
 const RELEASE_URL: &str =
     "https://github.com/VitorPinhoAlcantara/Hub-Pessoal/releases/latest/download";
 const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
@@ -102,7 +103,7 @@ pub fn check(source: &UpdateSource, current: &str) -> Result<Option<UpdateInfo>,
 }
 
 fn download_manifest() -> Result<Option<String>, UpdateError> {
-    let response = ureq::get(format!("{RELEASE_URL}/{MANIFEST_FILE}"))
+    let response = ureq::get(format!("{RELEASE_URL}/{RELEASE_MANIFEST}"))
         .config()
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
